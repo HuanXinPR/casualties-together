@@ -31,9 +31,6 @@ namespace Together {
 
     [BepInProcess("CasualtiesUnknown.exe")]
     [BepInPlugin(MyPluginInfo.PLUGIN_GUID, MyPluginInfo.PLUGIN_NAME, MyPluginInfo.PLUGIN_VERSION)]
-    // do NOT BepInDependency net.cucorelib: CUCoreLib already BepInDependencys CasualtiesMP for its
-    // krokMP bridge, and BepInEx 5 treats Soft+Hard as load-order edges -> cyclic dependency fatal.
-    // keep the assembly reference; skins/MultiplayerApi resolve CUCoreLib at runtime.
     public class Plugin : BaseUnityPlugin {
         internal static ManualLogSource log;
         internal static new ManualLogSource Logger => log;
@@ -293,16 +290,6 @@ namespace Together {
             log.LogInfo($"Plugin {MyPluginInfo.PLUGIN_GUID} version {Plugin.FULL_MOD_VERSION} is loaded!");
             log.LogInfo($"Game version: \"{Application.version}\"");
 
-            try {
-                SpriteReplacerPlugin.EnsureLoaded();
-            } catch (Exception e) {
-                log.LogError("Sprite replacer boot: " + e);
-            }
-
-
-
-
-
             KSteam.CheckSteam();
 
             UIMainMenu._USE_STEAM_MENU = KSteam.Loaded;
@@ -388,8 +375,6 @@ namespace Together {
                     log.LogError($"Failed to patch: {patch.Name}: {ex.Message}");
                 }
             }
-
-            ExtraPatches.ApplyPatches(harmony);
         }
         public static List<Type> GetHarmonyPatchesInNamespaces(params string[] namespaces) {
             return Assembly.GetExecutingAssembly()
@@ -406,7 +391,6 @@ namespace Together {
         void MultiplayerUnpatch() {
             if (harmony != null) {
                 try {
-                    ExtraPatches.UnpatchExtraPatches(harmony);
                     harmony.UnpatchSelf();
                     harmony = null;
                 } catch (Exception e) {

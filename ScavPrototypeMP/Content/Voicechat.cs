@@ -1414,6 +1414,10 @@ public class Voicechat :  CasualtiesTogetherSingleton {
         if (ScavPlayer.TryGetPlayerFromClientId(speakerId, out var plr) && plr.vc_output != null) {
 
             reader.Get(out byte freq_index);
+            // 校验远端转发采样率下标边界，防止损坏或越界包触发客户端异常
+            if (freq_index >= STANDART_FREQUENCIES.Length) {
+                return;
+            }
             var freq = STANDART_FREQUENCIES[freq_index];
 
             reader.Get(out byte[] data);
@@ -1453,7 +1457,8 @@ public class Voicechat :  CasualtiesTogetherSingleton {
             }
 
 
-            if (freq_index > STANDART_FREQUENCIES.Length) {
+            // 修正越界条件为 >= Length，防止 freq_index 恰等于数组长度时抛出 IndexOutOfRangeException
+            if (freq_index >= STANDART_FREQUENCIES.Length) {
 #if !RELEASE 
                 Plugin.log.LogInfo($"SUS: VOICECHAT client sent wrong samplerate index: {freq_index} ");
 #endif // its possible to get this message while in the process of switching samplerate, so its not a sus thing

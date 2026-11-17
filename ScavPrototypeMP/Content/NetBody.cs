@@ -1,4 +1,4 @@
-﻿using CasualtiesTogetherUtils;
+using CasualtiesTogetherUtils;
 using HarmonyLib;
 using LiteEntitySystem;
 using LiteNetLib;
@@ -934,15 +934,8 @@ public class NetBody : MonoBehaviour {
 
 
     void OnDestroy() {
-        // deferred Destroy can run after a species-swap replacement already owns the same
-        // syncBody id - only unregister / tear down LES if this instance still owns it.
-        SyncBody sb = syncBody;
-        if (sb != null) {
-            knetid id = sb.Id;
-            if (_PRIV_NetIdToNetBody.TryGetValue(id, out var mapped) && ReferenceEquals(mapped, this)) {
-                _PRIV_NetIdToNetBody.Remove(id);
-            }
-        }
+        // 优先执行全局实例表与玩家躯体字典清理，确保后续网络实体解绑抛异常时绝不残留失效 Body 引发每 0.1s NRE 刷屏
+        all_instances.Remove(this);
         if (body != null) {
             ScavPlayer.BodyToPlayerDict.Remove(body);
         }
@@ -951,11 +944,22 @@ public class NetBody : MonoBehaviour {
             MoodleManager.main.body = locbody;
         }
 
-        if (Net.IsServer && sb != null) {
-            // species mesh rebuild nulls syncBody first so the entity stays alive
-            if (sb.nb == null || ReferenceEquals(sb.nb, this)) {
-                syncBody = null;
-                sb.Destroy();
+        // deferred Destroy can run after a species-swap replacement already owns the same
+        // syncBody id - only unregister / tear down LES if this instance still owns it.
+        SyncBody sb = syncBody;
+        if (sb != null) {
+            try {
+                knetid id = sb.Id;
+                if (_PRIV_NetIdToNetBody.TryGetValue(id, out var mapped) && ReferenceEquals(mapped, this)) {
+                    _PRIV_NetIdToNetBody.Remove(id);
+                }
+
+                if (Net.IsServer && (sb.nb == null || ReferenceEquals(sb.nb, this))) {
+                    syncBody = null;
+                    sb.Destroy();
+                }
+            } catch (Exception e) {
+                log.error("NetBody.OnDestroy SyncBody解绑异常已隔离: " + e);
             }
         }
 
@@ -1016,14 +1020,19 @@ public class NetBody : MonoBehaviour {
     public Rigidbody2D rb => body.rb;
 
     public void SetPlayer(ScavPlayer newPlayer) {
-        ScavPlayer.BodyToPlayerDict.Remove(body);
+        if (body != null) {
+            ScavPlayer.BodyToPlayerDict.Remove(body);
+        }
         if (IsPlayer) {
             this.plr.body = null;
         }
         plr = newPlayer;
         if (plr != null) {
             plr.body = this.body;
-            ScavPlayer.BodyToPlayerDict.Add(plr.body, plr);
+            if (plr.body != null) {
+                // 使用幂等索引器覆盖替代 Add，防止已通过初始化写入映射时抛出重复键异常
+                ScavPlayer.BodyToPlayerDict[plr.body] = plr;
+            }
             ApplyNameAndColor(plr.playerName, plr.playerColor);
             SetUnchipped(plr.unchipped);
         }
@@ -1953,9 +1962,11 @@ public class NetBody : MonoBehaviour {
 
 
     public bool CanBeCarriedBySomeone() {
+#if FULLGAME
         if (ConcurrentEndings.ScientistDead && plr != null && !plr.IsUnchipped()) {
             return false;
         }
+#endif
         if (Multiplayer.rules.AlwaysAllowCarry) {
             return true;
         }
@@ -1973,9 +1984,11 @@ public class NetBody : MonoBehaviour {
         if (this == target) {
             return false;
         }
+#if FULLGAME
         if (EndingCarry.Blocked(this, target)) {
             return false;
         }
+#endif
         if (piggybacking_on == target || body == null || target.body == null) {
             return false;
         }

@@ -1,7 +1,6 @@
 using System;
-using System.Reflection;
 using System.Threading;
-using HarmonyLib;
+using LiteNetLib.Utils;
 
 namespace KrokV5Optimization;
 
@@ -13,28 +12,20 @@ internal static class FixCompressWriter
 {
 	internal static long Hits;
 
-	private static byte[] _copyScratch = new byte[256];
-	private static byte[] _gzipRaw = new byte[256];
-
 	// this file's counters on the 10s report.
 	internal static string Evidence() => "writer=" + Hits;
 
-	// true means the packet was rewritten. false leaves the caller on Util.Compress.
-	internal static bool Apply(object w2, int start_to_ignore) => Try(w2, start_to_ignore);
+	// 强类型直接操作 NetDataWriter，消除原先每包 4 次动态反射查找、装箱数组分配与双重中间缓冲区拷贝
+	internal static bool Apply(NetDataWriter w2, int start_to_ignore) => Try(w2, start_to_ignore);
 
 	// gzip bytes after `start`, then Put them back over that same range. the header before `start` stays.
-	private static bool Try(object writer, int start)
+	private static bool Try(NetDataWriter writer, int start)
 	{
-		if (!CompressPool.On || writer == null || CompressPool.GzipBusy)
+		if (!CompressPool.On || writer == null || start < 0 || CompressPool.GzipBusy)
 			return false;
-		Type type = writer.GetType();
-		PropertyInfo lengthProp = type.GetProperty("Length");
-		PropertyInfo dataProp = type.GetProperty("Data");
-		if (lengthProp == null || dataProp == null)
-			return false;
-		int length = (int)lengthProp.GetValue(writer) - start;
-		byte[] data = dataProp.GetValue(writer) as byte[];
-		if (length < 0 || data == null || !Monitor.TryEnter(CompressPool.GzipGate))
+		int length = writer.Length - start;
+		byte[] data = writer.Data;
+		if (length < 0 || data == null || start + length > data.Length || !Monitor.TryEnter(CompressPool.GzipGate))
 			return false;
 		try
 		{
@@ -43,24 +34,52 @@ internal static class FixCompressWriter
 			CompressPool.GzipBusy = true;
 			try
 			{
-				// copy out first. gzip reads that copy while the writer buffer is still the uncompressed packet.
-				_copyScratch = CompressPool.Ensure(_copyScratch, length);
-				if (length > 0)
-					Buffer.BlockCopy(data, start, _copyScratch, 0, length);
-				ResettableDeflate.WriteGzip(_copyScratch, 0, length, CompressPool.GzipOut);
+				// WriteGzip 先把完整压缩结果输出到独立的 CompressPool.GzipOut，压缩完毕后再覆写回 writer，无需额外暂存拷贝
+				ResettableDeflate.WriteGzip(data, start, length, CompressPool.GzipOut);
 				int outLen = (int)CompressPool.GzipOut.Length;
 				if (outLen > ushort.MaxValue)
 					return false;
-				_gzipRaw = CompressPool.Ensure(_gzipRaw, outLen);
-				if (outLen > 0)
-					Buffer.BlockCopy(CompressPool.GzipOut.GetBuffer(), 0, _gzipRaw, 0, outLen);
-				MethodInfo setPos = type.GetMethod("SetPosition", new[] { typeof(int) });
-				MethodInfo put = type.GetMethod("PutBytesWithLength", new[] { typeof(byte[]), typeof(int), typeof(ushort) });
-				if (setPos == null || put == null)
-					return false;
-				setPos.Invoke(writer, new object[] { start });
-				put.Invoke(writer, new object[] { _gzipRaw, 0, (ushort)outLen });
+				writer.SetPosition(start);
+				writer.PutBytesWithLength(CompressPool.GzipOut.GetBuffer(), 0, (ushort)outLen);
 				Hits++;
+				return true;
+			}
+			catch (Exception ex)
+			{
+				CompressPool.Note(ex);
+				return false;
+			}
+			finally
+			{
+				CompressPool.GzipBusy = false;
+			}
+		}
+		finally
+		{
+			Monitor.Exit(CompressPool.GzipGate);
+		}
+	}
+
+	// 在 NetDataReader.RawData 切片上直接原位解压，避免 r2.GetBytesWithLength() 每次分配中间压缩段 byte[]
+	internal static bool TryDecompressSlice(byte[] rawData, int offset, int length, out byte[] result)
+	{
+		result = null;
+		if (!CompressPool.On || rawData == null || CompressPool.GzipBusy || !Monitor.TryEnter(CompressPool.GzipGate))
+			return false;
+		try
+		{
+			if (CompressPool.GzipBusy)
+				return false;
+			CompressPool.GzipBusy = true;
+			try
+			{
+				if (!ResettableDeflate.TryInflateGzip(rawData, offset, length, CompressPool.GzipDecOut))
+				{
+					CompressPool.InflateDecline++;
+					return false;
+				}
+				result = CompressPool.CopyExact(CompressPool.GzipDecOut);
+				FixUtilDecompress.Hits++;
 				return true;
 			}
 			catch (Exception ex)

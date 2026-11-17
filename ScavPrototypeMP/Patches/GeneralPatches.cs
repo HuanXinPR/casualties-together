@@ -422,6 +422,7 @@ static class Sound_Play_MultiplayerPatch {
 
         // vanilla animalhitsweet is 2D feedback for the hitter. Attack relay re-runs Body.Attack
         // on every peer (thornbackyoung / other animals), so without this everyone hears it full-volume.
+#if FULLGAME
         // attaching a prosthetic plays a 2D sting at the origin, so every peer who runs AttachProsthetic hears it at full volume
         if (clip == "prostheticapply") {
             Body attached = Limb_AchievementOwner_MultiplayerPatch.AttachingBody;
@@ -430,6 +431,7 @@ static class Sound_Play_MultiplayerPatch {
                 twoDimensional = false;
             }
         }
+#endif
 
         if (clip == "animalhitsweet") {
             var attacker = Body_Attack_MultiplayerPatch.LastAttacker;

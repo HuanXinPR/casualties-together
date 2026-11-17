@@ -6,7 +6,8 @@
 		<ModVersion>5.5.1</ModVersion>
 		<FullModVersion>$(ModVersion)</FullModVersion>
 
-		<SlnRoot>$(SolutionDir)</SlnRoot>
+		<SlnRoot Condition="'$(SolutionDir)' != '' and '$(SolutionDir)' != '*Undefined*'">$(SolutionDir)</SlnRoot>
+		<SlnRoot Condition="'$(SlnRoot)' == ''">$(MSBuildThisFileDirectory)</SlnRoot>
 
 		<OutputDir>$(SlnRoot)\build\artifacts\$(MSBuildProjectName)</OutputDir>
 		<BaseOutputPath>$(OutputDir)\bin</BaseOutputPath>
@@ -35,7 +36,7 @@
 	</PropertyGroup>
 	<PropertyGroup Condition="'$(Configuration)'=='Release'">
 		<GameType>Demo</GameType>
-		<DefineConstants>$(DefineConstants);DEMOGAME</DefineConstants>
+		<DefineConstants>$(DefineConstants);DEMOGAME;RELEASE</DefineConstants>
 	</PropertyGroup>
 
 	<PropertyGroup Condition="'$(Configuration)'=='DebugFullgame'">

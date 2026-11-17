@@ -463,10 +463,6 @@ public class UIManager : CasualtiesTogetherSingleton {
                         rt2.offsetMax = Vector2.zero;
 
                         button2.onClick.AddListener(() => {
-                            if (!UIMainMenu.CoreLibLoaded) {
-                                UIMainMenu.ApplyMpMenuButton(false);
-                                return;
-                            }
 #if !RELEASE 
                             log.l("OPENING THE MENU");
 #endif 
@@ -475,32 +471,17 @@ public class UIManager : CasualtiesTogetherSingleton {
                                 runSettingsMenu.SetActive(false);
                             }
                         });
-                        if (!UIMainMenu.CoreLibLoaded) {
-                            UIMainMenu.ApplyMpMenuButton(false);
-                        }
 
                         log.l("MP menu button created");
 
                         mpButtonBg.raycastPadding = Vector2.one * 4f;
                         mpButtonBg.sprite = uiBlockSmall;
 
-                        try {
-                            SkinMenuUI.AlignMenuButtonBesideMp();
-                        } catch (System.Exception alignEx) {
-                            log.error("Skin menu button align: " + alignEx);
-                        }
-
                     }
                 }
 
             } catch (System.Exception e) {
                 log.error("CREATING MENU BUTTONS " + e.ToString());
-            }
-        } else {
-            try {
-                SkinMenuUI.AlignMenuButtonBesideMp();
-            } catch (System.Exception alignEx) {
-                log.error("Skin menu button align: " + alignEx);
             }
         }
 

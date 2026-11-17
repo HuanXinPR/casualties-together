@@ -178,19 +178,7 @@ public static class UIMainMenu {
     }
 
 
-    internal const string CoreLibPluginGuid = "net.cucorelib";
-    internal const string CoreLibMissingLabel = "CUCoreLib not found";
-
-    internal static bool CoreLibLoaded {
-        get {
-            try {
-                return BepInEx.Bootstrap.Chainloader.PluginInfos.ContainsKey(CoreLibPluginGuid);
-            } catch {
-                return false;
-            }
-        }
-    }
-
+    // 已移除内置 Skins 子系统及其对 CUCoreLib 的强门禁依赖，联机主按钮直接保持可用状态
     internal static void ApplyMpMenuButton(bool open) {
         if (UIManager.MP_MENU_BUTTON == null) {
             return;
@@ -198,20 +186,6 @@ public static class UIMainMenu {
 
         TextMeshProUGUI label = UIManager.MP_MENU_BUTTON.GetComponentInChildren<TextMeshProUGUI>();
         Button button = UIManager.MP_MENU_BUTTON.GetComponent<Button>();
-        if (!CoreLibLoaded) {
-            if (label != null) {
-                label.text = CoreLibMissingLabel;
-            }
-            if (button != null) {
-                // disabledColor on the cloned Cancel button can be fully clear, which hides the label
-                ColorBlock colors = button.colors;
-                colors.disabledColor = colors.normalColor;
-                button.colors = colors;
-                button.interactable = false;
-            }
-            return;
-        }
-
         if (button != null) {
             button.interactable = true;
         }
@@ -222,10 +196,6 @@ public static class UIMainMenu {
 
     public static bool mainmenu_open { get; private set; }
     public static void SetOpen(bool open_or_nah) {
-        if (open_or_nah && !CoreLibLoaded) {
-            ApplyMpMenuButton(false);
-            return;
-        }
         if (open_or_nah != mainmenu_open) {
             if (open_or_nah) {
                 Application.runInBackground = true;
@@ -2295,14 +2265,6 @@ public static class UIMainMenu {
         gui_func = _GUI___SettingsDebug,
         settings_origin = typeof(DebugMenuSettings)
     };
-    internal static SettingsTab _skins_setting_tab = new SettingsTab {
-        name = "mmst_skins",
-        settings_origin = typeof(SkinSettings),
-        on_reset = () => {
-            SettingsJsonThing.json.Save();
-            SpriteReplacerPlugin.SyncSpeciesCache();
-        },
-    };
     internal static SettingsTab _bugreport_setting_tab = null;
     public static SettingsTab cur_settings_tab = _general_setting_tab;
     public static List<SettingsTab> ALL_SETTINGS = new List<SettingsTab> {
@@ -2310,7 +2272,6 @@ public static class UIMainMenu {
         _chat_setting_tab,
         _voip_setting_tab,
         _gui_setting_tab,
-        _skins_setting_tab,
     };
 
     static float MicVolumePreviewPixHeight = 20f;
@@ -2599,7 +2560,6 @@ public static class UIMainMenu {
 
                         if (val != newval) {
                             b_attr.Save(f, newval);
-                            CommitSkinSetting(f);
 #if FULLGAME
                             if (f.Name == nameof(UIBullshit.USE_DEFAULT_TALKER_FONT)) {
                                 TalkerSpeciesFont.RefreshAll();
@@ -2617,7 +2577,6 @@ public static class UIMainMenu {
 
                         if (val != newval) {
                             c_attr.Save(f, newval);
-                            CommitSkinSetting(f);
                         }
 
                     } else {
@@ -2629,14 +2588,6 @@ public static class UIMainMenu {
 
             }
         }
-    }
-
-
-    // save here. the apply button is too late for the next game.
-    internal static void CommitSkinSetting(FieldInfo f) {
-        if (f == null || f.DeclaringType != typeof(SkinSettings)) return;
-        SettingsJsonThing.json.Save();
-        SpriteReplacerPlugin.SyncSpeciesCache();
     }
 
     internal static Dictionary<Type, List<FieldInfo>> _known_settings = new();

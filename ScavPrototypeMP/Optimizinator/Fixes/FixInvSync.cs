@@ -60,14 +60,7 @@ internal static class FixInvSync
     private static bool _wasInGame;
     private static bool _sweepQuiet;
 
-    private static MethodInfo _getInfo;
-    private static MethodInfo _apply;
-    private static MethodInfo _force;
-    private static FieldInfo _hasContainer;
-    private static FieldInfo _extra;
-    private static FieldInfo _knet;
-    private static FieldInfo _id;
-    private static FieldInfo _ver;
+    private static Action<SyncInfo> _apply;
     private static bool _ready;
     private static bool _dead;
     private static bool _ticking;
@@ -99,12 +92,30 @@ internal static class FixInvSync
     // host republish is Refresh, called from FixRejoinBaseline when worldgen finishes.
     internal static void Arm(Harmony harmony)
     {
-        _apply = AccessTools.Method(typeof(SyncInfo), "UpdateItemContainer");
-        if (_apply == null)
+        // 用一次性构建的强类型开实例委托绑定私有 SyncInfo.UpdateItemContainer，消除每帧 MethodInfo.Invoke 反射装箱
+        MethodInfo applyMethod = AccessTools.Method(typeof(SyncInfo), "UpdateItemContainer");
+        if (applyMethod == null)
             throw new MissingMethodException("inv sync apply");
-        Type sync = AccessTools.TypeByName("Together.ItemSync");
-        _force = AccessTools.Method(sync, "Container_ForceLoadItem", new[] { typeof(Item), typeof(Container) });
+        _apply = (Action<SyncInfo>)Delegate.CreateDelegate(typeof(Action<SyncInfo>), applyMethod);
         OptimizerMain.Log.LogDebug("[KrokV5Opt] inv sync is in UpdateItemContainer");
+    }
+
+    // 供 BagPlace.AfterApply 查询是否已由 FixInvSync 队列托管重试，避免双队列重复轮询同一装包物品
+    internal static bool Manages(SyncInfo info)
+    {
+        if (info == null || info.item == null)
+            return false;
+        int id = info.item.GetInstanceID();
+        return Pending.ContainsKey(id) || Exhausted.ContainsKey(id);
+    }
+
+    internal static void ClearManaged(SyncInfo info)
+    {
+        if (info == null || info.item == null)
+            return;
+        int id = info.item.GetInstanceID();
+        Pending.Remove(id);
+        Exhausted.Remove(id);
     }
 
     // host only. walk the registry a few times because parenting one item can register another mid-loop.
@@ -608,12 +619,10 @@ internal static class FixInvSync
         };
     }
 
-    // prefix on SafeUnloadItem. false skips it when the info names no container. that call returns before it moves anything, but it still allocates.
-    internal static bool SkipLoose(object ici)
+    // 直接读取同程序集 ItemsContainerInfo.has_container，消除 FieldInfo.GetValue 反射开销
+    internal static bool SkipLoose(ItemSync.ItemsContainerInfo ici)
     {
-        if (ici == null || HasContainer(ici))
-            return true;
-        return false;
+        return ici == null || ici.has_container;
     }
 
     // host. read the live parent and store it. 1 = wrote and marked dirty, 0 = nothing to say, -1 = leave the stored byte alone.
@@ -683,7 +692,7 @@ internal static class FixInvSync
         {
             if (!ContainerLink.TryBody(info, out _))
                 return false;
-            _apply.Invoke(info, null);
+            _apply(info);
             return Placed(info);
         }
         SyncInfo bag = FindBag(net, ver, out Container box);
@@ -694,10 +703,8 @@ internal static class FixInvSync
             ItemSync.ParentTestChest("chest skip retry", info.item, bag.go);
             return false;
         }
-        // ForceLoad skips the "unload slot first" path that KeepHeld is avoiding.
-        if (_force == null)
-            return false;
-        _force.Invoke(null, new object[] { info.item, box });
+        // 直接调用同程序集 ItemSync.Container_ForceLoadItem，消除 object[] 数组装箱反射
+        ItemSync.Container_ForceLoadItem(info.item, box);
         return Placed(info);
     }
 
@@ -872,38 +879,23 @@ internal static class FixInvSync
         }
     }
 
-    // ItemsContainerInfo.has_container. false means the unload names nothing.
-    static bool HasContainer(object ici)
-    {
-        if (_hasContainer == null)
-            _hasContainer = ici.GetType().GetField("has_container", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-        return _hasContainer != null && _hasContainer.GetValue(ici) is bool on && on;
-    }
-
-    // ItemGetContainerInfo is the same read stock uses. containerExtraData1 is the parent kind, knetid is who.
+    // 直接调用同程序集 ItemSync.ItemGetContainerInfo 读取实时容器三元组，彻底移除每次 5 次反射读取与装箱
     static bool ReadLive(Item item, out byte data, out ushort net, out byte ver)
     {
         data = 0;
         net = 0;
         ver = 0;
-        object info = _getInfo.Invoke(null, new object[] { item });
+        if (item == null)
+            return false;
+        ItemSync.ItemsContainerInfo info = ItemSync.ItemGetContainerInfo(item);
         if (info == null)
             return false;
-        object extra = _extra.GetValue(info);
-        object knet = _knet.GetValue(info);
-        if (!(extra is byte live) || knet == null)
-            return false;
-        object id = _id.GetValue(knet);
-        if (!(id is ushort liveNet))
-            return false;
-        data = live;
-        net = liveNet;
-        if (_ver != null && _ver.GetValue(info) is byte liveVer)
-            ver = liveVer;
+        data = info.containerExtraData1;
+        net = info.knetid.id;
+        ver = info.containerVer;
         return true;
     }
 
-    // one-time reflection. a miss turns the host republish off. the client hooks from Arm stay.
     static bool Ready()
     {
         if (_ready)
@@ -912,17 +904,13 @@ internal static class FixInvSync
             return false;
         try
         {
-            Type sync = AccessTools.TypeByName("Together.ItemSync");
-            _getInfo = AccessTools.Method(sync, "ItemGetContainerInfo", new[] { typeof(Item) });
-            _apply = AccessTools.Method(typeof(SyncInfo), "UpdateItemContainer");
-            if (_getInfo == null || _apply == null)
-                throw new MissingMethodException("inv sync read");
-            _extra = AccessTools.Field(_getInfo.ReturnType, "containerExtraData1");
-            _knet = AccessTools.Field(_getInfo.ReturnType, "knetid");
-            _id = AccessTools.Field(typeof(knetid), "id");
-            _ver = AccessTools.Field(_getInfo.ReturnType, "containerVer");
-            if (_extra == null || _knet == null || _id == null || _ver == null)
-                throw new MissingFieldException("inv sync fields");
+            if (_apply == null)
+            {
+                MethodInfo applyMethod = AccessTools.Method(typeof(SyncInfo), "UpdateItemContainer");
+                if (applyMethod == null)
+                    throw new MissingMethodException("inv sync read");
+                _apply = (Action<SyncInfo>)Delegate.CreateDelegate(typeof(Action<SyncInfo>), applyMethod);
+            }
             _ready = true;
             return true;
         }

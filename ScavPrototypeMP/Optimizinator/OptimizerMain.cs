@@ -72,7 +72,6 @@ public static class OptimizerMain {
         Try(typeof(FixItemTooltip));
         Try(typeof(FixInvDrag));
         Try(typeof(FixSimRange));
-        FindTheBug.Install(_harmony);
         Try(typeof(ItemTick));
         Try(typeof(HeldSeat));
         Try(typeof(BodyCache));

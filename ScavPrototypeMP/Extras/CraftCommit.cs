@@ -36,6 +36,8 @@ public static class CraftCommit {
     static uint _stepAttempt;
     static CraftStep _stepResult;
     const float ResendSeconds = 2f;
+    // 单次合成请求最大存活期（秒），超时自动释放材料预扣锁并解锁 _stepOpen
+    const float MaxAttemptLifetimeSeconds = 10f;
     const float TombstoneSeconds = 2f;
     const int Remember = 64;
     const int GateTicks = 240;
@@ -57,6 +59,7 @@ public static class CraftCommit {
         public ushort recipe;
         public ushort[] ids;
         public List<Claim> claims;
+        public float bornAt;
         public float sentAt;
     }
 
@@ -141,6 +144,7 @@ public static class CraftCommit {
     static readonly Queue<uint> SeenOrder = new Queue<uint>();
     static readonly List<byte> SeenLiquidId = new List<byte>();
     static readonly List<ushort> SeenLiquidMl = new List<ushort>();
+    static readonly List<uint> _expiredAttempts = new List<uint>();
 
     internal static void Tick() {
         if (!Net.IsRunning) {
@@ -155,10 +159,35 @@ public static class CraftCommit {
 
         if (!Net.IsServer) {
             float now = Time.realtimeSinceStartup;
-            foreach (var pair in Attempts) {
-                Attempt attempt = pair.Value;
-                if (now - attempt.sentAt >= ResendSeconds)
-                    SendAttempt(attempt);
+            if (Attempts.Count > 0) {
+                // 先用临时列表收集超时在途合成事务再统一释放，避免遍历 Attempts 时修改字典或永久锁死 _stepOpen
+                _expiredAttempts.Clear();
+                foreach (var pair in Attempts) {
+                    Attempt attempt = pair.Value;
+                    if (now - attempt.bornAt >= MaxAttemptLifetimeSeconds)
+                        _expiredAttempts.Add(pair.Key);
+                }
+                if (_expiredAttempts.Count > 0) {
+                    for (int i = 0; i < _expiredAttempts.Count; i++) {
+                        uint deadId = _expiredAttempts[i];
+                        Release(deadId);
+                        if (_stepOpen && deadId == _stepAttempt) {
+                            _stepOpen = false;
+                            _stepDone = false;
+                            _stepAttempt = 0;
+                        }
+                    }
+                    _expiredAttempts.Clear();
+                    RefreshIfOpen();
+                }
+                foreach (var pair in Attempts) {
+                    Attempt attempt = pair.Value;
+                    if (now - attempt.sentAt >= ResendSeconds)
+                        SendAttempt(attempt);
+                }
+            } else if (_stepOpen && !_stepDone) {
+                _stepOpen = false;
+                _stepAttempt = 0;
             }
         }
         ExpireTombstones();
@@ -190,13 +219,15 @@ public static class CraftCommit {
         if (_next == 0)
             _next = 1;
 
+        float now = Time.realtimeSinceStartup;
         var attempt = new Attempt {
             session = _session,
             id = id,
             recipe = (ushort)recipe.index,
             ids = ids,
             claims = claims,
-            sentAt = Time.realtimeSinceStartup,
+            bornAt = now,
+            sentAt = now,
         };
         Hold(attempt);
 
@@ -258,13 +289,15 @@ public static class CraftCommit {
         if (_next == 0)
             _next = 1;
 
+        float now = Time.realtimeSinceStartup;
         var attempt = new Attempt {
             session = _session,
             id = id,
             recipe = (ushort)recipe.index,
             ids = ids,
             claims = claims,
-            sentAt = Time.realtimeSinceStartup,
+            bornAt = now,
+            sentAt = now,
         };
         Hold(attempt);
 
@@ -340,10 +373,9 @@ public static class CraftCommit {
             _stepDone = true;
             _stepResult = new CraftStep { Pending = false, Accepted = receipt.accepted, Reason = receipt.reason };
         }
+        // 成功分支已在 Release 前调用过一次 NoteMade（读取未释放的配方记录并播放音效），此处仅在失败时弹提示，避免重复叠播音效
         if (!receipt.accepted)
             Util.DoAlert(ReasonText(receipt.reason));
-        else
-            NoteMade(receipt);
         RefreshIfOpen();
     }
 
@@ -526,7 +558,8 @@ public static class CraftCommit {
         claims = null;
         ids = null;
         reason = CraftReason.Missing;
-        List<Item> synced = Collect(body, PoolMode.SyncedReachable);
+        // 单次扫描背包与 10 格物理圆内的全部候选物品并分桶，消除缺料点击时重复执行 3 次 OverlapCircleAll 与射线遮挡查询
+        CollectAllPools(body, out List<Item> synced, out List<Item> anyReachable, out List<Item> wide);
         List<Item> matched = Evaluate(recipe, synced, reserve: true, thorough: false, capture: true, out claims);
         if (matched != null && claims != null) {
             ids = UniqueIds(claims);
@@ -537,16 +570,52 @@ public static class CraftCommit {
             reason = CraftReason.Missing;
             return false;
         }
-        if (Evaluate(recipe, Collect(body, PoolMode.AnyReachable), reserve: false, thorough: false, capture: false, out _) != null) {
+        if (Evaluate(recipe, anyReachable, reserve: false, thorough: false, capture: false, out _) != null) {
             reason = CraftReason.StillSyncing;
             return false;
         }
-        if (Evaluate(recipe, Collect(body, PoolMode.Wide), reserve: false, thorough: false, capture: false, out _) != null) {
+        if (Evaluate(recipe, wide, reserve: false, thorough: false, capture: false, out _) != null) {
             reason = CraftReason.Unreachable;
             return false;
         }
         reason = CraftReason.Missing;
         return false;
+    }
+
+    static void CollectAllPools(Body body, out List<Item> syncedReachable, out List<Item> anyReachable, out List<Item> wide) {
+        syncedReachable = new List<Item>();
+        anyReachable = new List<Item>();
+        wide = new List<Item>();
+        if (body == null || _collecting)
+            return;
+        _collecting = true;
+        try {
+            List<Item> inventory = body.GetAllItemsThorough();
+            for (int i = 0; i < inventory.Count; i++) {
+                Item invItem = inventory[i];
+                if (invItem == null)
+                    continue;
+                wide.Add(invItem);
+                anyReachable.Add(invItem);
+                if (ItemSync.TryGetSyncInfo(invItem, out SyncInfo si) && si != null)
+                    syncedReachable.Add(invItem);
+            }
+            Collider2D[] hits = Physics2D.OverlapCircleAll(body.transform.position, 10f, LayerMask.GetMask("Item"));
+            for (int i = 0; i < hits.Length; i++) {
+                if (!hits[i].TryGetComponent(out Item item) || item == null)
+                    continue;
+                if (!body.DoPickupCheck(item, true))
+                    continue;
+                wide.Add(item);
+                if (!ItemSync.CheckIfBodyReachThisItem(item, body))
+                    continue;
+                anyReachable.Add(item);
+                if (ItemSync.TryGetSyncInfo(item, out SyncInfo si) && si != null)
+                    syncedReachable.Add(item);
+            }
+        } finally {
+            _collecting = false;
+        }
     }
 
     static List<Item> Pool(PoolMode mode) {
@@ -1014,7 +1083,7 @@ public static class CraftCommit {
         FixCraftOrder.LogResult(pb, recipe, true, CraftReason.Ok.ToString());
         receipt = Store(crafts, receipt);
         // the entity destroy does not clear the copy other machines already seated from the mouth byte.
-        SendSpend(receipt);
+        SendSpend(receipt, playerId);
         return receipt;
     }
 
@@ -1225,10 +1294,11 @@ public static class CraftCommit {
     }
 
     // every other machine. the host already destroyed its copy. the crafter's own receipt still carries the ui.
-    static void SendSpend(Receipt receipt) {
+    static void SendSpend(Receipt receipt, knetid crafterPlayerId) {
         if (receipt == null || !receipt.accepted)
             return;
-        IReadOnlyList<knetid> ids = ServerMain.AllClientIdsExceptHost;
+        // 排除房主与合成发起者本人（发起者已由 HandleServer 的 SendReceipt 单独接收），避免给发起者双发两份相同的可靠有序回执
+        List<knetid> ids = ServerMain.GetListOfClientIdsExceptThisAndHost(crafterPlayerId);
         if (ids == null || ids.Count == 0)
             return;
         NetDataWriter writer = Net.CreateWriter(NetmsgId.CLIENT_CraftReceipt);
@@ -1463,6 +1533,7 @@ public static class CraftCommit {
         YieldedFrom.Clear();
         Seen.Clear();
         SeenOrder.Clear();
+        _expiredAttempts.Clear();
     }
 
     static string ReasonText(CraftReason reason) {

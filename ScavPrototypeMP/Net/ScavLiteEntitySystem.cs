@@ -84,17 +84,35 @@ namespace Together {
         static void ServerReceiver__LiteEntitySystem(knetid clientId, LiteNetLib.Utils.NetDataReader reader) {
             NetPlayer plr = Net.ServerEntityManager.GetPlayer((byte)clientId);
             if (plr != null) {
-                reader.SkipBytes(-sizeof(byte));
-                byte[] bytes = reader.GetRemainingBytes();
-                DeserializeResult result = Net.ServerEntityManager.Deserialize(plr, bytes);
+                // 直接将包含 1 字节 Header 的底层缓冲区切片以 ReadOnlySpan<byte> 零拷贝传入 LES，消除每包 GetRemainingBytes() 数组分配
+                int startOffset = reader.Position - sizeof(byte);
+                int totalLen = reader.AvailableBytes + sizeof(byte);
+                if (reader.RawData != null && startOffset >= 0 && startOffset + totalLen <= reader.RawData.Length) {
+                    ReadOnlySpan<byte> span = new ReadOnlySpan<byte>(reader.RawData, startOffset, totalLen);
+                    reader.SkipBytes(reader.AvailableBytes);
+                    DeserializeResult result = Net.ServerEntityManager.Deserialize(plr, span);
+                } else {
+                    reader.SkipBytes(-sizeof(byte));
+                    byte[] bytes = reader.GetRemainingBytes();
+                    DeserializeResult result = Net.ServerEntityManager.Deserialize(plr, bytes);
+                }
             }
         }
 
         [ClientReceiver((byte)NetmsgId.LiteEntitySystem)]
         static void ClientReceiver__LiteEntitySystem(knetid _, LiteNetLib.Utils.NetDataReader reader) {
-            reader.SkipBytes(-sizeof(byte));
-            byte[] bytes = reader.GetRemainingBytes();
-            DeserializeResult result = Net.ClientEntityManager.Deserialize(bytes);
+            // 零拷贝切片传入 ClientEntityManager.Deserialize，消除客户端每秒 30+ 次状态快照包的临时 byte[] 拷贝
+            int startOffset = reader.Position - sizeof(byte);
+            int totalLen = reader.AvailableBytes + sizeof(byte);
+            if (reader.RawData != null && startOffset >= 0 && startOffset + totalLen <= reader.RawData.Length) {
+                ReadOnlySpan<byte> span = new ReadOnlySpan<byte>(reader.RawData, startOffset, totalLen);
+                reader.SkipBytes(reader.AvailableBytes);
+                DeserializeResult result = Net.ClientEntityManager.Deserialize(span);
+            } else {
+                reader.SkipBytes(-sizeof(byte));
+                byte[] bytes = reader.GetRemainingBytes();
+                DeserializeResult result = Net.ClientEntityManager.Deserialize(bytes);
+            }
         }
 
 
@@ -724,9 +742,8 @@ namespace Together {
             _isRight.Value = nb.body.isRight;
             _crouching.Value = nb.body.crouching;
             _standing.Value = nb.body.standing;
-            // ragdoll syncgroup is handled in Player.SlowButFastUpdate
-            // a carry still has the pose from the ground. writing it here is what gets pasted back over the hang.
-            if (!nb.IsPiggybacking()) {
+            // 仅在角色非站立（布娃娃倒地）且未被背负时写入 15 肢体 × 4 个 SyncGroup3 字段，省去站立态每 Tick 60 次跨层物理属性读取与标脏
+            if (nb?.body != null && !nb.body.standing && !nb.IsPiggybacking()) {
                 WriteRagdollData();
             }
 
@@ -897,6 +914,7 @@ namespace Together {
         bool poseFresh;
         // the loose byte can land while _position is still the pre-release sample.
         bool poseHold;
+        float poseHoldUntil;
         bool poseSeen;
         byte posePrevData;
 
@@ -904,6 +922,7 @@ namespace Together {
             lastPositionUpdateTime = Time.realtimeSinceStartupAsDouble;
             poseFresh = true;
             poseHold = false;
+            poseHoldUntil = 0f;
         }
 
         // client pose glide. one server state is a single tick, so a slower write
@@ -1323,7 +1342,8 @@ namespace Together {
                         } else if (BuildingPacketUnchanged()) {
                             return;
                         }
-                        if (tracker != null && !tracker.isVisible) {
+                        // 仅对地面散落物（container_data1 == 0）启用视距外 10-Tick 降频，确保装包或随身携带物品当帧零延迟应用状态变更
+                        if (container_data1.Value == 0 && tracker != null && !tracker.isVisible) {
                             updateTimer++;
                             if (updateTimer < 10) {
                                 return;
@@ -2015,8 +2035,13 @@ namespace Together {
             bool released = data == 0 && poseSeen && posePrevData != 0;
             if (data != 0) {
                 poseHold = false;
+                poseHoldUntil = 0f;
             } else if (released && !poseFresh) {
+                // 原地垂直丢弃时若量化坐标与入包前完全一致，服务端可能不下发新 _position；设 0.25s 超时自动解冻防止掉落物永久悬空
                 poseHold = true;
+                poseHoldUntil = Time.unscaledTime + 0.25f;
+            } else if (poseHold && Time.unscaledTime >= poseHoldUntil) {
+                poseHold = false;
             }
             poseSeen = true;
             posePrevData = data;
@@ -2553,10 +2578,12 @@ namespace Together {
                 if (specialdata1.Value != 0) {
                     b.GetOrAddComponent<TrackerSoundCannon>().soundcannon_spent(specialdata2.Value);
                 }
+#if FULLGAME
             } else if (b.TryGetComponent(out ColdPuffScript coldPuff)) {
                 if (specialdata1.Value != 0) {
                     TrapClaim.ApplyColdPuffBlown(coldPuff);
                 }
+#endif
             } else if (b.TryGetComponent(out PistonScript piston)) {
                 // clientPistonFollowHost reads specialdata1 each Update; nothing else to apply here.
             } else if (b.TryGetComponent(out CrystalEnemy manifestation)) {

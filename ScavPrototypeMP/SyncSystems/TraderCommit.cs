@@ -648,9 +648,9 @@ internal static class TraderCommit {
         if (live != null) {
             Body body = null;
             ScavPlayer.TryGetPlayerAndBodyFromClientId(clientId, out _, out body);
-            // client walked up first. roll first impression on the host copy before they paint the ui
-            if (TraderScript_MeetPlayer_MultiplayerPatch.EnsureFirstMeet(live, body))
-                PublishTo(live, clientId);
+            // 若该商人尚未完成房间首见判定则先计算初始好感；无论是否首见均必须下发快照，防止后到/重连客户端打开交易界面空白无货
+            TraderScript_MeetPlayer_MultiplayerPatch.EnsureFirstMeet(live, body);
+            PublishTo(live, clientId);
         }
     }
 

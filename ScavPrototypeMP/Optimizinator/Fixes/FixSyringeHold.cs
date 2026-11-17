@@ -25,15 +25,13 @@ internal static class FixSyringeHold
 	// this file's counters on the 10s report.
 	internal static string Evidence() => "syringeHold=" + Hits;
 
-	// snapshot condition and liquid before WriteObjectIntoPacket mutates the sync fields.
+	// 仅在 Begin 标记本次打包有效，不在 Begin 与 End 重复计算两次 LiquidHash
 	internal static void Begin(SyncInfo __instance, out Snap __state)
 	{
 		__state = default;
 		if (!Net.IsServer || __instance == null || __instance.item == null)
 			return;
 		__state.Seen = true;
-		__state.Condition = __instance.item.condition;
-		__state.Liquid = LiquidHash(__instance.item);
 	}
 
 	// if condition or the liquid stack changed since last packet, force the container fields dirty too.
@@ -81,8 +79,7 @@ internal static class FixSyringeHold
 	// order-sensitive hash of the liquid stack. used only to notice a change, not sent on the wire.
 	static int LiquidHash(Item item)
 	{
-		WaterContainerItem water = item.GetComponent<WaterContainerItem>();
-		if (water == null || water.stack == null)
+		if (!item.TryGetComponent(out WaterContainerItem water) || water == null || water.stack == null)
 			return 0;
 		int hash = water.stack.Count;
 		for (int i = 0; i < water.stack.Count; i++)

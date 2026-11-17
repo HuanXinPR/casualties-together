@@ -209,6 +209,11 @@ public class ClientMain : MonoBehaviour {
             Con.CleanWorld();
         });
 
+        // 切场景或重新生成世界时归零同步节流时间戳，保证进图首帧可立即上报角色状态
+        Multiplayer.OnSceneChangeOrWorldStartGenerate += () => {
+            _last_sync_time = 0;
+        };
+
     }
 
 
@@ -230,7 +235,12 @@ public class ClientMain : MonoBehaviour {
         var locplr = ScavPlayer.LocalPlayer;
         if (Net.IsConnected && locplr != null) {
 
-            var current_sync_delta = (float)(Time.realtimeSinceStartupAsDouble - _last_sync_time);
+            double raw_sync_delta = Time.realtimeSinceStartupAsDouble - _last_sync_time;
+            if (raw_sync_delta < 0) {
+                _last_sync_time = 0;
+                raw_sync_delta = Time.realtimeSinceStartupAsDouble;
+            }
+            var current_sync_delta = (float)raw_sync_delta;
             bool cansendsyncnow = current_sync_delta * ServerPerformanceScale >= 0.1f;
 
             if (locplr.BasePlayer != null) {
@@ -297,7 +307,7 @@ public class ClientMain : MonoBehaviour {
         }
 
         var mydata = new ClientToServer_NetBodySyncPacket(loc_nb);
-        FindTheBugInator.NoteMove("send", loc_nb, mydata.pos, "tick=" + mydata.Tick + " stand=" + (mydata.standing ? 1 : 0) + " piggy=" + (mydata.is_piggyback ? 1 : 0) + " md=" + mydata.moveDir.x.ToString("0.00") + "," + mydata.moveDir.y.ToString("0.00") + " vel=" + ((Vector2)mydata.velocity).x.ToString("0.00") + "," + ((Vector2)mydata.velocity).y.ToString("0.00"));
+        // 移除传给空方法 FindTheBugInator.NoteMove 的 7 段浮点数格式化字符串拼接，消除每包 GC 分配
 
         var writer = Net.CreateWriter(NetmsgId.SERVER_ClientCharacterSyncUpdate);
         writer.Put(mydata);
@@ -306,6 +316,8 @@ public class ClientMain : MonoBehaviour {
         }
         writer.CompressWriter();
         Net.Client_Send(DeliveryMethod.Unreliable, writer);
+        // 更新节流基准时间，修复原先因从未写入 _last_sync_time 导致每渲染帧无上限狂发 Gzip 包的问题（移动启停边沿仍保持 0ms 即时触发）
+        _last_sync_time = Time.realtimeSinceStartupAsDouble;
         // WRITER END;
     }
 
@@ -381,7 +393,8 @@ public class ClientMain : MonoBehaviour {
 
 
 
-    double _last_sync_time = 0;
+    // 静态节流时间戳，统一收敛自动同步与手动触发的角色包发送节拍
+    internal static double _last_sync_time = 0;
     Vector2 last_movedir_thing = Vector2.zero;
     Vector2Int16 last_looktarget = new();
 

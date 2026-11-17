@@ -1989,15 +1989,19 @@ namespace Together {
 
             int sendBufferSizeBytes = defaultBufferSizeLimit * 2;
 
+            // SetConfigValue 调用完成后立即释放 Pinned GCHandle，修复原先装箱 int 在整个进程生命周期永久钉死托管堆的泄漏
             GCHandle handle = System.Runtime.InteropServices.GCHandle.Alloc(sendBufferSizeBytes, System.Runtime.InteropServices.GCHandleType.Pinned);
-
-            SteamNetworkingUtils.SetConfigValue(
-                Steamworks.ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendBufferSize,
-                Steamworks.ESteamNetworkingConfigScope.k_ESteamNetworkingConfig_Global,
-                IntPtr.Zero,
-                Steamworks.ESteamNetworkingConfigDataType.k_ESteamNetworkingConfig_Int32,
-                handle.AddrOfPinnedObject()
-            );
+            try {
+                SteamNetworkingUtils.SetConfigValue(
+                    Steamworks.ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendBufferSize,
+                    Steamworks.ESteamNetworkingConfigScope.k_ESteamNetworkingConfig_Global,
+                    IntPtr.Zero,
+                    Steamworks.ESteamNetworkingConfigDataType.k_ESteamNetworkingConfig_Int32,
+                    handle.AddrOfPinnedObject()
+                );
+            } finally {
+                handle.Free();
+            }
 
         }
 
@@ -2920,66 +2924,58 @@ namespace Together {
             }
         }
         double lastExceedWarn = 0;
-        public void SendThroughSteamSocket(in HSteamNetConnection connection, ReadOnlySpan<byte> data, int sendFlag) {
-
-            byte[] data_copied = data.ToArray();
-
-            //create an unmanaged array and get a pointer to it
-            GCHandle pinnedArray = GCHandle.Alloc(data_copied, GCHandleType.Pinned);
-            IntPtr pData = pinnedArray.AddrOfPinnedObject();
-
-            //send to the target
+        public unsafe void SendThroughSteamSocket(in HSteamNetConnection connection, ReadOnlySpan<byte> data, int sendFlag) {
+            // 直接使用 fixed 钉住 ReadOnlySpan<byte> 传入 Steam 非托管发送缓冲，彻底消除每包 data.ToArray() 堆拷贝与 GCHandle.Alloc 锁竞争
             EResult response;
-            if (is_steamserver) {
-                response = SteamGameServerNetworkingSockets.SendMessageToConnection(connection, pData, (uint)data_copied.Length, sendFlag, out long _);
-            } else {
-                response = SteamNetworkingSockets.SendMessageToConnection(connection, pData, (uint)data_copied.Length, sendFlag, out long _);
+            fixed (byte* ptr = data) {
+                IntPtr pData = data.IsEmpty ? IntPtr.Zero : (IntPtr)ptr;
+                if (is_steamserver) {
+                    response = SteamGameServerNetworkingSockets.SendMessageToConnection(connection, pData, (uint)data.Length, sendFlag, out long _);
+                } else {
+                    response = SteamNetworkingSockets.SendMessageToConnection(connection, pData, (uint)data.Length, sendFlag, out long _);
+                }
             }
-
-            //free the unmanaged array
-            pinnedArray.Free();
-
 
             if (response == EResult.k_EResultOK) {
-                FindTheBugInator.NoteSteamOut(data_copied.Length);
+                FindTheBugInator.NoteSteamOut(data.Length);
+                return;
             }
 
-            if (response != EResult.k_EResultOK) {
+            if (response == EResult.k_EResultNoConnection && !log.verbose) {
+                return;
+            }
 
-                if (response == EResult.k_EResultNoConnection && !log.verbose) {
-                    return;
+            uint targetConnHandle = connection.m_HSteamNetConnection;
+            SteamConnectionData foundsteamid = null;
+            foreach (SteamConnectionData entry in connectionMapping.Values) {
+                if (entry != null && entry.connection.m_HSteamNetConnection == targetConnHandle) {
+                    foundsteamid = entry;
+                    break;
                 }
+            }
 
-
-                var gfgfddfgdfg = connection.m_HSteamNetConnection;
-                SteamConnectionData foundsteamid = connectionMapping.Values.FirstOrDefault(x => x.connection.m_HSteamNetConnection == (gfgfddfgdfg));
-
-                string msgid_as_str = "";
+            string msgid_as_str = "";
 #if !(RELEASE && !PLAYTEST)
-                try {
-                    NetDataReader read = new NetDataReader(data_copied);
-                    byte msgid = read.GetByte();
-                    msgid_as_str = Net.ByteMsgIdToName(msgid) + " :";
-                } catch (Exception e) { }
+            if (!data.IsEmpty) {
+                msgid_as_str = Net.ByteMsgIdToName(data[0]) + " :";
+            }
 #endif
 
-                if (foundsteamid != null) {
-                    if (response == EResult.k_EResultLimitExceeded) {
-                        if (Time.realtimeSinceStartupAsDouble - lastExceedWarn > 30) {
-                            lastExceedWarn = Time.realtimeSinceStartupAsDouble;
-                            Plugin.Logger.LogError($"{this.GetType().Name}.Send: Could not send: {msgid_as_str}{response} {BetterToStringFromSteamID(foundsteamid.id)}");
-                        }
-                    } else {
-#if TESTING
-                        Plugin.Logger.LogError($"{this.GetType().Name}.Send: Could not send: {msgid_as_str}{response} {BetterToStringFromSteamID(foundsteamid.id)} {new StackTrace()}");
-#else
+            if (foundsteamid != null) {
+                if (response == EResult.k_EResultLimitExceeded) {
+                    if (Time.realtimeSinceStartupAsDouble - lastExceedWarn > 30) {
+                        lastExceedWarn = Time.realtimeSinceStartupAsDouble;
                         Plugin.Logger.LogError($"{this.GetType().Name}.Send: Could not send: {msgid_as_str}{response} {BetterToStringFromSteamID(foundsteamid.id)}");
-#endif
                     }
                 } else {
-                    Plugin.Logger.LogError($"{this.GetType().Name}.Send: Could not send: {msgid_as_str}{response}  UNKNOWN CONNECTION {connection}");
+#if TESTING
+                    Plugin.Logger.LogError($"{this.GetType().Name}.Send: Could not send: {msgid_as_str}{response} {BetterToStringFromSteamID(foundsteamid.id)} {new StackTrace()}");
+#else
+                    Plugin.Logger.LogError($"{this.GetType().Name}.Send: Could not send: {msgid_as_str}{response} {BetterToStringFromSteamID(foundsteamid.id)}");
+#endif
                 }
-
+            } else {
+                Plugin.Logger.LogError($"{this.GetType().Name}.Send: Could not send: {msgid_as_str}{response}  UNKNOWN CONNECTION {connection}");
             }
 
         }
@@ -3060,13 +3056,21 @@ namespace Together {
 
 
         public void FlushNagle() {
-            SteamNetworkingSockets.FlushMessagesOnConnection(serverUser.connection);
+            // 客户端仅刷新对房主单连接一次（避免与 connectionMapping 重复刷新同一连接），服务端判空避免 serverUser 为 null 抛异常
+            if (Net.IsClient) {
+                if (serverUser != null && serverUser.connection != HSteamNetConnection.Invalid) {
+                    SteamNetworkingSockets.FlushMessagesOnConnection(serverUser.connection);
+                }
+                return;
+            }
             foreach (KeyValuePair<ulong, SteamConnectionData> item in connectionMapping) {
-                SteamNetworkingSockets.FlushMessagesOnConnection(item.Value.connection);
+                if (item.Value != null && item.Value.connection != HSteamNetConnection.Invalid) {
+                    SteamNetworkingSockets.FlushMessagesOnConnection(item.Value.connection);
+                }
             }
         }
         public void FlushNagle(knetid plrId) {
-            if (SteamIDToClientIDDict.TryGet(plrId, out ulong steamId) && connectionMapping.TryGetValue(steamId, out SteamConnectionData connection)) {
+            if (SteamIDToClientIDDict.TryGet(plrId, out ulong steamId) && connectionMapping.TryGetValue(steamId, out SteamConnectionData connection) && connection != null && connection.connection != HSteamNetConnection.Invalid) {
                 SteamNetworkingSockets.FlushMessagesOnConnection(connection.connection);
             }
         }

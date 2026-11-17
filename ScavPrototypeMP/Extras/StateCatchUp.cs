@@ -15,7 +15,10 @@ namespace Together;
 /// </summary>
 internal static class StateCatchUp
 {
-	const int KeepReady = 2;
+	// 放宽就绪队列水位至 6（~200ms @ 30Hz），使常规 2~3 包网络微突发仍交由 LES 原生抖动缓冲平滑插值，仅在真实卡顿积压时介入追赶
+	const int KeepReady = 6;
+
+	static readonly List<object> _pendingScratch = new List<object>(16);
 
 	static FieldInfo _ready;
 	static FieldInfo _pool;
@@ -80,45 +83,53 @@ internal static class StateCatchUp
 		if (count <= KeepReady)
 			return;
 
-		var pending = new List<object>(count);
-		for (int i = 0; i < count; i++)
-			pending.Add(_extract.Invoke(heap, null));
-
-		int applied = 0;
-		object stateB = _stateB.GetValue(mgr);
-		if (stateB != null)
+		// 复用静态列表收集待追赶快照并在 finally 清空引用，避免每次触发追赶时分配临时 List<object>
+		_pendingScratch.Clear();
+		try
 		{
-			Commit(mgr, stateB, false);
-			applied++;
+			for (int i = 0; i < count; i++)
+				_pendingScratch.Add(_extract.Invoke(heap, null));
+
+			int applied = 0;
+			object stateB = _stateB.GetValue(mgr);
+			if (stateB != null)
+			{
+				Commit(mgr, stateB, false);
+				applied++;
+			}
+
+			int last = _pendingScratch.Count - 1;
+			for (int i = 0; i < last; i++)
+			{
+				if (_pendingScratch[i] == null)
+					continue;
+				Commit(mgr, _pendingScratch[i], true);
+				applied++;
+			}
+
+			object newest = last >= 0 ? _pendingScratch[last] : null;
+			if (newest != null)
+			{
+				Preload(mgr, newest);
+				_stateB.SetValue(mgr, newest);
+			}
+
+			float step = StepSeconds(mgr);
+			_total.SetValue(mgr, step);
+			_timer.SetValue(mgr, 0f);
+			if (_lerp != null)
+				_lerp.SetValue(mgr, 0f);
+
+			float now = UnityEngine.Time.realtimeSinceStartup;
+			if (applied > 0 && now - _loggedAt > 2f)
+			{
+				_loggedAt = now;
+				OptimizerMain.Log.LogDebug("state catch-up applied " + applied);
+			}
 		}
-
-		int last = pending.Count - 1;
-		for (int i = 0; i < last; i++)
+		finally
 		{
-			if (pending[i] == null)
-				continue;
-			Commit(mgr, pending[i], true);
-			applied++;
-		}
-
-		object newest = last >= 0 ? pending[last] : null;
-		if (newest != null)
-		{
-			Preload(mgr, newest);
-			_stateB.SetValue(mgr, newest);
-		}
-
-		float step = StepSeconds(mgr);
-		_total.SetValue(mgr, step);
-		_timer.SetValue(mgr, 0f);
-		if (_lerp != null)
-			_lerp.SetValue(mgr, 0f);
-
-		float now = UnityEngine.Time.realtimeSinceStartup;
-		if (applied > 0 && now - _loggedAt > 2f)
-		{
-			_loggedAt = now;
-			OptimizerMain.Log.LogDebug("state catch-up applied " + applied);
+			_pendingScratch.Clear();
 		}
 	}
 

@@ -435,12 +435,6 @@ public static class Openable_OnUse_MultiplayerPatch {
             bool synced = NetObjectRegistry.TryGetSyncInfo(__instance.gameObject, out var si);
             BuildingEntity building = __instance.GetComponent<BuildingEntity>();
             bool opened = synced && building != null && building.GetHealth() == 0f;
-            EvidenceBag.Arm();
-            EvidenceBag.Line("open client instant=" + __instance.instantOpen
-                + " keypad=" + __instance.isKeypad
-                + " sent=" + opened
-                + " synced=" + synced
-                + " " + EvidenceBag.Building(building));
             if (opened) {
                 //success
 
@@ -476,20 +470,10 @@ public static class Openable_OnUse_MultiplayerPatch {
                 openalbe.OnUse();
             }
 
-            EvidenceBag.Arm();
-            EvidenceBag.Line("open server ok client=" + clientId + " " + EvidenceBag.Building(si.building));
-
             if (DebugHelp._DEV_VISUALISE_NET_EVENTS) DebugHelp.OnNetEvent(si.go.transform.position, $"S: Openable open {user}, si:{si}");
 
             return;
         }
-        BuildingEntity deniedBuilding = null;
-        if (si != null && si.go != null)
-            deniedBuilding = si.building;
-        EvidenceBag.Line("open server deny client=" + clientId
-            + " instant=" + (openalbe != null && openalbe.instantOpen)
-            + " sync=" + (si != null ? si.syncId.ToString() : "none")
-            + " " + EvidenceBag.Building(deniedBuilding));
 #if DEBUG
         Plugin.log.LogWarning($" Server_OpenableOpenTypeShit DENIED !!!!!!!!!!!!!!!!!!!!!!  {user}  openebleeh:  {openalbe}  si: {si} ");
 #endif

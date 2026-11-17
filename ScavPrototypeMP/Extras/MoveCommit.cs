@@ -44,6 +44,7 @@ public static class MoveCommit {
         public uint session;
         public uint id;
         public List<Move> moves;
+        public float bornAt;
         public float sentAt;
     }
 
@@ -62,6 +63,8 @@ public static class MoveCommit {
     }
 
     const float ResendSeconds = 2f;
+    // 单次移动事务最大存活期（秒），防止目标实体持续 StillSyncing 或异常早退导致整局无限重发锁死物品
+    const float MaxAttemptLifetimeSeconds = 10f;
     const int Remember = 64;
 
     static uint _session;
@@ -82,6 +85,7 @@ public static class MoveCommit {
     static readonly List<Item> Gesture = new List<Item>();
     static readonly Dictionary<knetid, Book> Books = new Dictionary<knetid, Book>();
     static readonly List<uint> DropIds = new List<uint>();
+    static readonly List<Attempt> ExpiredAttempts = new List<Attempt>();
 
     // the reply named this parent. ignore container bytes until they say the same thing, or this runs out.
     struct Latch {
@@ -121,9 +125,21 @@ public static class MoveCommit {
         _running = true;
         if (_session == 0)
             _session = (uint)UnityEngine.Random.Range(1, int.MaxValue);
+        float now = Time.realtimeSinceStartup;
+        // 先用临时列表收集并清理超过最大重试寿命的在途事务，严禁在遍历字典期间直接修改 Attempts
+        if (Attempts.Count > 0) {
+            ExpiredAttempts.Clear();
+            foreach (var pair in Attempts) {
+                Attempt attempt = pair.Value;
+                if (now - attempt.bornAt >= MaxAttemptLifetimeSeconds)
+                    ExpiredAttempts.Add(attempt);
+            }
+            for (int i = 0; i < ExpiredAttempts.Count; i++)
+                Release(ExpiredAttempts[i]);
+            ExpiredAttempts.Clear();
+        }
         if (Net.IsServer)
             return;
-        float now = Time.realtimeSinceStartup;
         foreach (var pair in Attempts) {
             Attempt attempt = pair.Value;
             if (now - attempt.sentAt >= ResendSeconds)
@@ -206,9 +222,28 @@ public static class MoveCommit {
         // already where the last reply put it. the slot scan must not send that again.
         if (Latched(move))
             return;
+        // 若当前已有目标落点完全相同的在途 Attempt（如上一帧刚通过 EndDrag 提交、下一物理帧 ItemContainerChanged 再次扫描），直接跳过双发
+        if (SameInFlight(move))
+            return;
         var moves = new List<Move>(1);
         moves.Add(move);
         Submit(moves);
+    }
+
+    static bool SameInFlight(Move move) {
+        if (!Newest.TryGetValue(move.item, out uint curId))
+            return false;
+        if (!Attempts.TryGetValue(curId, out Attempt cur) || cur == null || cur.moves == null)
+            return false;
+        for (int i = 0; i < cur.moves.Count; i++) {
+            Move m = cur.moves[i];
+            if (m.item != move.item)
+                continue;
+            return m.kind == move.kind
+                && m.destNet == move.destNet
+                && (move.kind != MoveKind.Slot || m.destSlot == move.destSlot);
+        }
+        return false;
     }
 
     static void Keep(Item item) {
@@ -287,11 +322,13 @@ public static class MoveCommit {
         uint id = _next++;
         if (_next == 0)
             _next = 1;
+        float now = Time.realtimeSinceStartup;
         var attempt = new Attempt {
             session = _session,
             id = id,
             moves = moves,
-            sentAt = Time.realtimeSinceStartup,
+            bornAt = now,
+            sentAt = now,
         };
         Hold(attempt);
         Attempts[attempt.id] = attempt;
@@ -665,6 +702,9 @@ public static class MoveCommit {
                 ApplyRow(receipt.rows[i]);
             }
         } finally {
+            // 无论回执接受或拒绝（含丢地/装包/穿戴或挤占旧槽位），退出拆包保护前统一对齐本地槽位快照，阻断下一物理帧回声包
+            if (Util.TryGetLocalBody(out Body lb))
+                ItemSync.RecordAndApplyInvState(lb);
             _applying = false;
         }
     }
@@ -727,6 +767,9 @@ public static class MoveCommit {
                 UnityEngine.Object.Destroy(item.gameObject);
             }
         } finally {
+            // 无论回执接受或拒绝（含丢地/装包/穿戴或挤占旧槽位），退出拆包保护前统一对齐本地槽位快照，阻断下一物理帧回声包
+            if (Util.TryGetLocalBody(out Body lb))
+                ItemSync.RecordAndApplyInvState(lb);
             _applying = false;
         }
     }
@@ -854,6 +897,8 @@ public static class MoveCommit {
         Latches.Clear();
         Gesture.Clear();
         Books.Clear();
+        DropIds.Clear();
+        ExpiredAttempts.Clear();
         _fromNet = 0;
         _depth = 0;
         _throwing = 0;

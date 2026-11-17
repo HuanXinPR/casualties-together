@@ -1898,7 +1898,10 @@ namespace Together {
                 {
                     var can_carry = interaction_menu_target_body.CanBeCarriedBySomeone()
                         && !the_guy_is_piggybacking_or_carrying_me
-                        && (me.netBody == null || !MacroFleshRebuilderMp.BlocksCarry(me.netBody));
+#if FULLGAME
+                        && (me.netBody == null || !MacroFleshRebuilderMp.BlocksCarry(me.netBody))
+#endif
+                        ;
                     if (DoPlayerInteractionMenuButton(GetNextRect(), can_carry, Lang.Get("plrint_carry"), ref focused)) {
 
                         ClientMain._PLRINT_Carry(interaction_menu_target_body);
@@ -2184,20 +2187,11 @@ namespace Together {
                 if (_UpdateCheckInteractKeybinds_CheckDistNShi(targetpb)) {
                     locplr.netBody.Hug(targetpb);
                 }
-            } else if (UnityEngine.Input.GetKeyDown(KeyBinds.GetBind(CoopKeybinds.woundview))) {
+            } else if (!CoopKeybinds.IsWoundViewSameAsOG() && UnityEngine.Input.GetKeyDown(KeyBinds.GetBind(CoopKeybinds.woundview))) {
+                // 当联机伤势查看与原版同键位时由 ToggleWoundView.Prefix 原生处理光标下队友，避免跨帧残留 IgnoreNext 吞掉下一次关闭操作
                 if (_UpdateCheckInteractKeybinds_CheckDistNShi(targetpb)) {
-
                     Util.DoAlert(String.Format(Lang.Get("plrint_req_woundview"), targetpb.bodyName));
-                    bool og = PlayerCamera_ToggleWoundView_MultiplayerPatch.IsOpen();
-
-                    PlayerCamera_ToggleWoundView_MultiplayerPatch.OpenSpecificBody(targetpb.body);//TODO try commenting this line and see if it still works, and do it only if not IsWoundViewSameAsOG 
-
-                    if (!og) {
-                        if (CoopKeybinds.IsWoundViewSameAsOG()) {
-                            PlayerCamera_ToggleWoundView_MultiplayerPatch.IgnoreNext = true;
-                        }
-                    }
-
+                    PlayerCamera_ToggleWoundView_MultiplayerPatch.OpenSpecificBody(targetpb.body);
                 }
             } else if (UnityEngine.Input.GetKeyDown(KeyBinds.GetBind(CoopKeybinds.inventory))) {
                 if (_UpdateCheckInteractKeybinds_CheckDistNShi(targetpb)) {
@@ -2209,7 +2203,11 @@ namespace Together {
                         ClientMain._PLRINT_Piggyback(targetpb);
                     }
                 } else if (UnityEngine.Input.GetKeyDown(KeyBinds.GetBind(CoopKeybinds.carry))) {
-                    if (targetpb.CanBeCarriedBySomeone() && (locpb == null || !MacroFleshRebuilderMp.BlocksCarry(locpb))) {
+                    bool blockedByPod = false;
+#if FULLGAME
+                    blockedByPod = locpb != null && MacroFleshRebuilderMp.BlocksCarry(locpb);
+#endif
+                    if (targetpb.CanBeCarriedBySomeone() && !blockedByPod) {
                         if (_UpdateCheckInteractKeybinds_CheckDistNShi(targetpb)) {
                             ClientMain._PLRINT_Carry(targetpb);
                         }
@@ -2295,7 +2293,17 @@ namespace Together {
 
 
                 if (Util.IsWorldGenerated()) {
-                    if (!Con.IsConsoleOpen() && UnityEngine.Input.GetKeyDown(KeyBinds.GetBind(CoopKeybinds.pointfingerat))) {
+                    // 聊天打字、暂停菜单或合成台搜索框聚焦期间禁止触发世界交互快捷键，避免打字误触推人/抱人/开面板
+                    bool interactHotkeysBlocked = Con.IsConsoleOpen()
+                        || Chat.CHAT_textbox_input_focused
+                        || PauseHandler.paused
+                        || (PlayerCamera.main != null
+                            && PlayerCamera.main.craftingPanel != null
+                            && PlayerCamera.main.craftingPanel.activeSelf
+                            && PlayerCamera.main.recipeFilterField != null
+                            && PlayerCamera.main.recipeFilterField.isFocused);
+
+                    if (!interactHotkeysBlocked && UnityEngine.Input.GetKeyDown(KeyBinds.GetBind(CoopKeybinds.pointfingerat))) {
 
                         Vector2 pos = (Vector2)Camera.main.ScreenToWorldPoint(Input.mousePosition);
 
@@ -2334,7 +2342,7 @@ namespace Together {
 
                             if (
                                 body_on_cursor != null
-                                && !Con.IsConsoleOpen()
+                                && !interactHotkeysBlocked
                                 && !PlayerCamera.main.woundView.activeSelf
                                 && locplr.IsConscious()
                                 && !body_on_cursor.IsBodyLocal()

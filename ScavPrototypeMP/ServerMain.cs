@@ -1643,10 +1643,14 @@ public class ServerMain : MonoBehaviour {
         reader.Get(out knetid itemId);
         reader.Get(out knetid this_guy);
 
+        // 校验赠送者清醒状态与物品可触及性，防止昏迷玩家赠送或伪造 itemId 隔空瞬移全图物品
         if (Util.IsWorldGenerated()
             && ScavPlayer.TryGetPlayerAndNetBodyFromClientId(clientId, out var giverPlr, out NetBody giverNetBody)
+            && giverNetBody.body != null && giverNetBody.body.conscious
             && NetBody.TryGetNetBodyFromId(this_guy, out NetBody receiverNetBody) && giverNetBody != receiverNetBody
-            && ItemSync.TryGetItemSyncInfo(itemId, out var si)
+            && receiverNetBody.body != null
+            && ItemSync.TryGetItemSyncInfo(itemId, out var si) && si.item != null
+            && ItemSync.CheckIfBodyReachThisItem(si, giverNetBody.body)
             && KM.DistanceCheck(giverNetBody, receiverNetBody, 20)
         ) {
             var ici = ItemSync.ItemGetContainerInfo(si.item);
@@ -1804,9 +1808,11 @@ public class ServerMain : MonoBehaviour {
         reader.Get(out AnyObjectNetId obj);
         var force = Mathf.Abs(f);
 
+        // 校验肢体下标范围，防止异常或恶意报文传入越界 byte 导致服务端抛出 IndexOutOfRangeException
         if (
             ScavPlayer.GetBodyFromClientId(clientId) is var body && body != null &&
-            body.alive && Util.IsFinite(f) && dir.IsFinite()
+            body.alive && body.limbs != null && i < body.limbs.Length && body.limbs[i] != null &&
+            Util.IsFinite(f) && dir.IsFinite()
         ) {
 #if !RELEASE
             Plugin.log.LogWarning($"Server recieved  PlayerImpactDamage {i} {f} {dir}  for plr {clientId}");
@@ -1887,6 +1893,10 @@ public class ServerMain : MonoBehaviour {
     static void ServerReceiver__SetTimeScale(knetid clientId, LiteNetLib.Utils.NetDataReader reader) {
         reader.Get(out ushort sc);
 
+        // 严格执行房间时间倍率规则校验，阻止在未开启 EnableTimeManipulation 时篡改全局流速
+        if (!Multiplayer.rules.EnableTimeManipulation)
+            return;
+
         if ((PlayerCamera.SpeedType)sc == PlayerCamera.SpeedType.Paused)
             return;
 
@@ -1912,11 +1922,9 @@ public class ServerMain : MonoBehaviour {
                     plr.ServerPlayerState.is_loaded_in = true;
                     if (pb.alive && !plr.Server_HasForcedServerOwnershipOfBody()) {
                         {
-
+                            // 移除服务端恒为 false 的客户端静态标志误判，恢复乱序旧位置包拦截与 SetNetIgnoreTime 传送/击退防回弹窗口
                             var seqDiff = LiteEntitySystem.Utils.SequenceDiff(pack.Tick, pb._lastSyncPacketReceiveTick);
-                            if (
-                                seqDiff <= 0 && ClientMain._last_reminderpack_while_generating_received
-                            ) {
+                            if (seqDiff <= 0) {
 #if !RELEASE
                                 if (log.verbose) log.l($"OnReceiveSyncPacket {pb}: received packet that is too old, ignoring it.");
 #endif

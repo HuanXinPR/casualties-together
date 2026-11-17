@@ -496,6 +496,7 @@ namespace Together {
                 IsRunningSteam = false;
                 Type = NetType.Host;
                 ClientMain.LOCAL_PING = 0;
+                ClientMain._last_sync_time = 0;
 
                 ClientMain.SERVER_FPS = 60;
                 ClientMain.SERVER_TPS = 60;
@@ -556,13 +557,15 @@ namespace Together {
         internal static void TransportCreated(NetType ntype, bool save_name = true) {
             Plugin.SkipMainMenuIntro();
 
+            // 必须先写入 Net.Type，否则由于 ShutdownReset 将初态置为 Host，下方 IsClient 判断恒为 false 导致单人设置漏备份
+            Net.Type = ntype;
+
             if (IsClient) {
                 MP3Menu.dropdownList = null;
                 _clientRunSettingsBeforeConnect = WorldMP.CompileRunSettings();
             }
 
             IsRunning = true;
-            Net.Type = ntype;
             Application.runInBackground = true;
 
 
@@ -836,9 +839,8 @@ namespace Together {
         public static void Server_SendTo(in DeliveryMethod delivery, in ReadOnlySpan<byte> data, in knetid clientid) {
 #if !RELEASE
             {
-                NetDataWriter writer = new NetDataWriter();
-                writer.Put(data);
-                Net.CheckWhatsTheMessageIdToMakeSureItDidntGetMessedUp(writer);
+                // 直接读取首字节校验 NetmsgId，消除原先每包分配 NetDataWriter + NetDataReader 整包拷贝开销
+                Net.CheckWhatsTheMessageIdToMakeSureItDidntGetMessedUp(data);
                 if (Net.IsClient) {
                     throw new Exception("CLIENT CANT DO THAT!!!!");
                 }
@@ -856,7 +858,18 @@ namespace Together {
 
         public static void Server_SendToClientsVeryReliable(in NetDataWriter writer, in IEnumerable<knetid> clientIds) {
             if (Net.TryGetSteamTransport(out TransportSteamworks tsteam)) {
-                tsteam.Server_SendToClients(Steamworks.Constants.k_nSteamNetworkingSend_Reliable, writer, clientIds.ToList());
+                List<knetid> targets = new List<knetid>(clientIds);
+                if (targets.Count == 0) {
+                    return;
+                }
+                // 补齐 Steam 极可靠发送路径对 SERVER_CLIENTID 的本地回环分发，与 Server_SendToClients 保持一致
+                if (targets.Remove(SERVER_CLIENTID)) {
+                    Net.InvokeClientMessage(Net.SERVER_CLIENTID, new NetDataReader(writer));
+                    if (targets.Count == 0) {
+                        return;
+                    }
+                }
+                tsteam.Server_SendToClients(Steamworks.Constants.k_nSteamNetworkingSend_Reliable, writer, targets);
             } else {
                 Net.Server_SendToClients(DeliveryMethod.ReliableOrdered, writer, clientIds);
             }
@@ -866,7 +879,7 @@ namespace Together {
         public static void Server_SendToClients(in DeliveryMethod delivery, in NetDataWriter writer, in IReadOnlyList<ScavPlayer> clients) => Server_SendToClients(delivery, writer, clients.Select(x => x.playerId).ToList());
         public static void Server_SendToClients(in DeliveryMethod delivery, in NetDataWriter writer, in IEnumerable<knetid> clientIds) {
 #if !RELEASE
-            Net.CheckWhatsTheMessageIdToMakeSureItDidntGetMessedUp(writer);
+            Net.CheckWhatsTheMessageIdToMakeSureItDidntGetMessedUp(writer.AsReadOnlySpan());
             if (Net.IsClient) {
                 throw new Exception("CLIENT CANT DO THAT!!!!");
             }
@@ -891,9 +904,7 @@ namespace Together {
 #if !RELEASE
             Con.ConFailIfNotConnected();
             {
-                NetDataWriter writer = new NetDataWriter();
-                writer.Put(data);
-                Net.CheckWhatsTheMessageIdToMakeSureItDidntGetMessedUp(writer);
+                Net.CheckWhatsTheMessageIdToMakeSureItDidntGetMessedUp(data);
                 if (Net.IsDedicatedServer) {
                     throw new Exception("DEDICATED SERVER CANT DO THAT!!!!");
                 }
@@ -910,14 +921,14 @@ namespace Together {
         }
 
 #if !RELEASE
-        public static void CheckWhatsTheMessageIdToMakeSureItDidntGetMessedUp(in NetDataWriter writer) {
-            NetDataReader reader = new NetDataReader(writer);
-
-            reader.Get(out byte msgId);
-            string n = Enum.GetName(typeof(NetmsgId), msgId);
-            if (n == null) {
+        public static void CheckWhatsTheMessageIdToMakeSureItDidntGetMessedUp(in ReadOnlySpan<byte> data) {
+            if (data.IsEmpty || Enum.GetName(typeof(NetmsgId), data[0]) == null) {
+                byte msgId = data.IsEmpty ? (byte)0 : data[0];
                 log.warn($"MESSAGE ID BROKE?????: msgid:{msgId}  FROM\n{new StackTrace()}");
             }
+        }
+        public static void CheckWhatsTheMessageIdToMakeSureItDidntGetMessedUp(in NetDataWriter writer) {
+            CheckWhatsTheMessageIdToMakeSureItDidntGetMessedUp(writer.AsReadOnlySpan());
         }
 #endif
 
@@ -1247,14 +1258,16 @@ namespace Together {
 
 
         internal TwoWayDictionary<knetid, NetPeer> ClientIdToPeerDict = new();
+        // 复用已连接对端缓冲列表，消除服务端每帧 new List<NetPeer>() 堆分配
+        private readonly List<NetPeer> _connectedPeersCache = new();
 
         void NetTransportBase.Update() {
 
             //clientIdToPeerDict.Clear();
             if (Net.IsServer) {
-                List<NetPeer> peers = new List<NetPeer>();
-                NetManager.GetConnectedPeers(peers);
-                foreach (NetPeer peer in peers) {
+                _connectedPeersCache.Clear();
+                NetManager.GetConnectedPeers(_connectedPeersCache);
+                foreach (NetPeer peer in _connectedPeersCache) {
                     try {
                         if (peer.Tag != null && peer.Tag is TagPlayerInfo klpe) {
                             //clientIdToPeerDict[klpe.plrId] = peer;
@@ -1333,6 +1346,16 @@ namespace Together {
             w2.PutBytesWithLength(compressed);
         }
         public static NetDataReader DecompressReader(this NetDataReader r2) {
+            // 优先在 r2.RawData 切片上直接原位 Gzip 解压并推进游标，省去 GetBytesWithLength() 的中间压缩段 byte[] 分配；失败时复原游标安全回退
+            if (r2 != null && r2.RawData != null && r2.AvailableBytes >= sizeof(ushort)) {
+                int savedPos = r2.Position;
+                ushort len = r2.GetUShort();
+                if (len <= r2.AvailableBytes && FixCompressWriter.TryDecompressSlice(r2.RawData, r2.Position, len, out byte[] pooled)) {
+                    r2.SkipBytes(len);
+                    return new NetDataReader(pooled);
+                }
+                r2.SetPosition(savedPos);
+            }
             byte[] og = Util.Decompress(r2.GetBytesWithLength());
             return new NetDataReader(og);
         }

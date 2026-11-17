@@ -598,17 +598,7 @@ public static class Body_Attack_MultiplayerPatch {
 
         var building_dmg = (be.animal ? atk.damage : atk.structuralDamage) * armstrength * ((atk.metalMoreDamage && be.metallic) ? 10f : 1f);
 
-        float healthBefore = be.GetHealth();
         be.SetHealth(be.GetHealth() - building_dmg);
-
-        if (Net.IsRunning && be != null) {
-            EvidenceBag.Arm();
-            EvidenceBag.Line("damage " + EvidenceBag.Side()
-                + " before=" + healthBefore.ToString("0.###")
-                + " minus=" + building_dmg.ToString("0.##")
-                + " local=" + Util.IsBodyLocal(attacker)
-                + " " + EvidenceBag.Building(be));
-        }
 
         if (do_sound) {
             Sound.Play(be.hitSound, be.transform.position);
@@ -1078,9 +1068,6 @@ public static class Body_Attack_MultiplayerPatch {
 
                         if (Net.IsClient && NetObjectRegistry.TryGetSyncInfo(_LastHitBuilding, out var b_si)) {
                             b_si.SetIgnoreTimeForRoundTrip();
-                            EvidenceBag.Line("hit client ignore sync=" + b_si.syncId + " " + EvidenceBag.Building(_LastHitBuilding));
-                        } else if (_LastHitBuilding != null) {
-                            EvidenceBag.Line("hit client no sync " + EvidenceBag.Building(_LastHitBuilding));
                         }
                     }
 
@@ -1134,9 +1121,6 @@ public static class Body_Attack_MultiplayerPatch {
                         writer.Put(_LastHitPos);
                         writer.Put(BlockDamageAuthority.TakeLocalBlockDamage());
 
-                        if (_LastHitBuilding != null)
-                            EvidenceBag.Line("hit send " + EvidenceBag.Side() + " victim=" + victim_netid + " " + EvidenceBag.Building(_LastHitBuilding));
-
                         Net.Client_Send(DeliveryMethod.ReliableUnordered, writer);
                         // WRITER END;
 
@@ -1168,7 +1152,6 @@ public static class Body_Attack_MultiplayerPatch {
                 double now = Time.realtimeSinceStartupAsDouble;
                 double gap = LastAttackAt.TryGetValue(clientId, out double prev) ? now - prev : AttackGapLimit;
                 if (gap < AttackGapLimit) {
-                    EvidenceBag.Line("hit server cooldown client=" + clientId + " gap=" + gap.ToString("0.###"));
                     if (log.verbose)
                         log.sus($"PlayerBodyAttack {plr} is attacking too fast, gap: {gap:0.###}");
                     return;
@@ -1312,7 +1295,6 @@ public static class Body_Attack_MultiplayerPatch {
 #endif
 
                 bool inRange = KM.DistanceCheck(plr.body, building_si, 15);
-                float healthBefore = building_si.building != null ? building_si.building.GetHealth() : -1f;
                 if (inRange) {
 #if DEBUG
                     log.l($"{plr}  CALLED DamageBuilding ");
@@ -1329,12 +1311,7 @@ public static class Body_Attack_MultiplayerPatch {
 
 
                     //netObjectRegistry.Server_QueueSync(building_si);
-                    EvidenceBag.Line("hit server apply dmg=" + totaldmg.ToString("0.##") + " before=" + healthBefore.ToString("0.###") + " client=" + clientId + " " + EvidenceBag.Building(building_si.building));
-                } else {
-                    EvidenceBag.Line("hit server range client=" + clientId + " before=" + healthBefore.ToString("0.###") + " " + EvidenceBag.Building(building_si.building));
                 }
-            } else if (hitobj.type == 3) {
-                EvidenceBag.Line("hit server unresolved client=" + clientId + " " + hitobj);
             }
 
 
@@ -1385,8 +1362,6 @@ public static class Body_Attack_MultiplayerPatch {
 
 
 
-        } else {
-            EvidenceBag.Line("hit server drop client=" + clientId + " world=" + worldReady + " player=" + gotAttacker + " conscious=" + attackerAwake);
         }
     }
 

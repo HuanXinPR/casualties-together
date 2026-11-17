@@ -201,7 +201,6 @@ static class Item_Start_MultiplayerPatch {
             __instance.GetOrAddComponent<HeaterMultiplayerRewrite>();
         }
 
-        bool watch = EvidenceBag.WatchingItem(__instance);
         if (Multiplayer.IsNetworkActiveAndIsWorldGenerated()) {
             var np = ScavPlayer.GetDistanceToNearestLivingPlayer(__instance.transform.position);
 
@@ -212,8 +211,6 @@ static class Item_Start_MultiplayerPatch {
         // craft parents the result first and registers it here, a frame later. the menu refresh during the craft ran before this id existed.
         if (__instance != null)
             CraftCommit.NoteCarriedSync(__instance);
-        if (watch)
-            EvidenceBag.AfterItemStart(__instance);
     }
 }
 
@@ -1998,7 +1995,11 @@ internal class ItemSync : CasualtiesTogetherSingleton {
         if (!item.TryGetComponent<WearableSpriteSwap>(out var swap) || swap == null) {
             return;
         }
+#if FULLGAME
         int chr = CharacterSpawn.ClampChar(body.charType);
+#else
+        int chr = Mathf.Max(0, body.charType);
+#endif
         SpriteRenderer sr = item.GetComponent<SpriteRenderer>();
         if (sr != null && swap.sprites != null && swap.sprites.Count > chr && swap.sprites[chr] != null) {
             sr.sprite = swap.sprites[chr];
@@ -2101,6 +2102,13 @@ internal class ItemSync : CasualtiesTogetherSingleton {
 
     public static bool ConfirmItemOffer(NetBody giver, NetBody taker, Item item) {
         if (item == null || giver == null || taker == null) return false;
+        // 异步弹窗等待期间状态可能已变化，必须复核双方存活、赠送者清醒、交互距离 <= 20f 且赠送者仍可触及该物品
+        if (giver.body == null || taker.body == null || !giver.body.alive || !taker.body.alive || !giver.body.conscious)
+            return false;
+        if (!KM.DistanceCheck(giver, taker, 20f))
+            return false;
+        if (!CheckIfBodyReachThisItem(item, giver.body))
+            return false;
 
         var ici = ItemGetContainerInfo(item);
         if (!ici.has_container || ici.bodynpc == giver) {
@@ -2110,9 +2118,90 @@ internal class ItemSync : CasualtiesTogetherSingleton {
     }
 
     public static void ForcePickupItem(NetBody body, Item item) {
-        ItemSync.SafeUnloadItem(item);
-        item.transform.position = body.GetPosition();
-        body.body.ForceAutoPickUpItem(item);
+        if (body == null || body.body == null || item == null || item.Stats == null)
+            return;
+
+        Body targetBody = body.body;
+        ItemsContainerInfo prevIci = ItemGetContainerInfo(item);
+
+        // 先预检接收者是否有合法穿戴位、空物品槽或可容纳随身容器；满格时绝不提前卸下赠送者手中的物品，防止客户端 !Ours 死区造成手槽撕裂
+        bool canWear = false;
+        int targetSlot = -1;
+        Container targetContainer = null;
+
+        if (item.Stats.wearable) {
+            Limb wearLimb = targetBody.LimbByName(item.Stats.desiredWearLimb);
+            if (wearLimb != null && !wearLimb.dismembered && targetBody.GetWearableBySlotID(item.Stats.wearSlotId) == null)
+                canWear = true;
+        }
+
+        if (!canWear && (!item.Stats.wearable || item.Stats.wearableCanBeHeld) && targetBody.slots != null) {
+            for (int i = 0; i < targetBody.slots.Length; i++) {
+                InventorySlot hold = targetBody.slots[i];
+                if (hold == null || targetBody.HoldingItem(i) || !hold.canPickUp)
+                    continue;
+                if (!HostCanSeat(targetBody, item, i, out _) || SlotHold.Other(targetBody, i, item))
+                    continue;
+                targetSlot = i;
+                break;
+            }
+        }
+
+        if (!canWear && targetSlot < 0) {
+            bool nestedNonEmpty = item.TryGetComponent(out Container ownBox) && ownBox.GetHoldingWeight() > 0f;
+            if (!nestedNonEmpty) {
+                targetContainer = FindAcceptingContainer(targetBody.GetAllWearables(), item)
+                    ?? FindAcceptingContainer(targetBody.GetSurfaceInventoryItems(), item);
+            }
+        }
+
+        if (!canWear && targetSlot < 0 && targetContainer == null) {
+            body.plr?.Server_DoAlertSingle("Inventory full.");
+            if (prevIci.plr != null && prevIci.plr != body.plr)
+                prevIci.plr.Server_DoAlertSingle("Target inventory is full.");
+            return;
+        }
+
+        SuppressContainerWrite++;
+        try {
+            SafeUnloadItem(prevIci);
+            item.transform.position = body.GetPosition();
+            if (canWear) {
+                Body_ForceWearWearable(targetBody, item);
+                if (targetBody.IsBodyLocal() && PlayerCamera.main != null)
+                    PlayerCamera.main.UpdateWearables();
+            } else if (targetSlot >= 0) {
+                targetBody.PickUpItem(item, targetSlot, true);
+                if (!targetBody.HoldingItem(item))
+                    HeldSeat.Seat(targetBody, item, targetSlot);
+            } else if (targetContainer != null) {
+                Container_ForceLoadItem(item, targetContainer);
+            }
+        } finally {
+            SuppressContainerWrite--;
+        }
+
+        if (prevIci.bodynpc != null && prevIci.bodynpc.body != null && prevIci.bodynpc.body.IsBodyLocal())
+            RecordAndApplyInvState(prevIci.bodynpc.body);
+        if (targetBody.IsBodyLocal())
+            RecordAndApplyInvState(targetBody);
+
+        HeldSeat.Quiet(item);
+        if (Net.IsServer && TryGetSyncInfo(item, out SyncInfo si) && si != null && !si.IsDestroyed)
+            si.WriteObjectIntoPacket();
+    }
+
+    static Container FindAcceptingContainer(IEnumerable<Item> carriers, Item item) {
+        if (carriers == null || item == null)
+            return null;
+        foreach (Item carrier in carriers) {
+            if (carrier == null || carrier == item || !carrier.TryGetComponent(out Container box) || box == null)
+                continue;
+            if (BrokenContainer(box) || !box.CanHoldItem(item))
+                continue;
+            return box;
+        }
+        return null;
     }
 
     public static void SafeUnloadItem(Item item) {
@@ -3258,25 +3347,31 @@ internal class ItemSync : CasualtiesTogetherSingleton {
             if (!ItemSync.TakePickupBag(item_syncid, out bag))
                 bag = BagFromByte(isi);
 
-            var ici = ItemSync.ItemGetContainerInfo(item);
-            if (ici.is_in_surface_inv) {
-                if (ici.bodynpc != null && ici.bodynpc.IsBodyLocal()) {
-                    var i = Array.IndexOf(ItemSync.Client_last_inventory_state, isi);
-                    if (i >= 0) {
-                        ItemSync.Client_last_inventory_state[i] = null;
+            // 客户端拆包回退期间加 MoveCommit 重入保护，防止 SafeUnloadItem -> DropItem 反向给服务端发 MoveKind.World 回声包
+            MoveCommit.PushApply();
+            try {
+                var ici = ItemSync.ItemGetContainerInfo(item);
+                if (ici.is_in_surface_inv) {
+                    if (ici.bodynpc != null && ici.bodynpc.IsBodyLocal()) {
+                        var i = Array.IndexOf(ItemSync.Client_last_inventory_state, isi);
+                        if (i >= 0) {
+                            ItemSync.Client_last_inventory_state[i] = null;
+                        }
                     }
-                }
-                ItemSync.SafeUnloadItem(ici);
-                if (bag != null) {
+                    ItemSync.SafeUnloadItem(ici);
+                    if (bag != null) {
+                        ItemSync.Container_ForceLoadItem(item, bag);
+                        log.devevent($"CLIENT: ItemPickup denied {isi}, back in bag", item.transform.position);
+                    }
+                    isi.lastUpdateTick = Net.ServerTick; // reset the ignore time 
+                } else if (bag != null && item.transform.parent == null) {
                     ItemSync.Container_ForceLoadItem(item, bag);
-                    isi.WriteContainerInfo();
                     log.devevent($"CLIENT: ItemPickup denied {isi}, back in bag", item.transform.position);
                 }
-                isi.lastUpdateTick = Net.ServerTick; // reset the ignore time 
-            } else if (bag != null && item.transform.parent == null) {
-                ItemSync.Container_ForceLoadItem(item, bag);
-                isi.WriteContainerInfo();
-                log.devevent($"CLIENT: ItemPickup denied {isi}, back in bag", item.transform.position);
+                if (Util.TryGetLocalBody(out Body lb))
+                    ItemSync.RecordAndApplyInvState(lb);
+            } finally {
+                MoveCommit.PopApply();
             }
         }
     }

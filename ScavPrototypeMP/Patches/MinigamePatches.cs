@@ -229,9 +229,11 @@ namespace Together {
                                     num++;
                                 }
                             }
+                            // 先比较弹片数量变化再赋值，修复原代码先赋值再判不等导致非末颗弹片取出时永不同步血量
+                            bool shrapnelChanged = sms.limb.shrapnel != num;
                             sms.limb.shrapnel = num;
 
-                            if (sms.limb.shrapnel != num && sms.limb.TryGetNetBody(out NetBody nb)) {
+                            if (shrapnelChanged && sms.limb.TryGetNetBody(out NetBody nb)) {
                                 MedicalSync.Server_QueueSendCharacterHealth(nb);
                             }
 
@@ -719,7 +721,8 @@ namespace Together {
             // remove all sessions with no active players 
             active_sessions.RemoveAll((sess) => {
 
-                if (sess.obj == null) {// check if the object was deleted
+                // 仅对明确要求关联实体对象（object_required）的会话在目标销毁时强制结束，避免误杀无实体小游戏会话
+                if (sess.object_required && sess.obj == null) {// check if the object was deleted
 
                     Server_EndMinigame(sess, false);
                     Note("session " + sess.session_id + " dropped, target gone");
@@ -1404,6 +1407,34 @@ namespace Together {
         public static byte selfharmminigame_last_cuts_count = 0;
         public static bool ignore_next_mgstart_cuz_its_not_me = false;
         public static Dictionary<string, OnBandageUse> known_bandages_onuse_lambdas = new Dictionary<string, OnBandageUse>();
+        // 原版 BandageMinigame.OnUse 闭包捕获了当次调用的具体 (item, limb) 实例，按实例对绑定可防止双人同时用同类绷带时效果与耐久串台
+        public static readonly Dictionary<(Item item, Limb limb), OnBandageUse> known_bandage_instance_lambdas = new Dictionary<(Item item, Limb limb), OnBandageUse>();
+
+        static void RegisterBandageLambda(Item item, Limb limb, OnBandageUse onUse) {
+            if (onUse == null) {
+                return;
+            }
+            if (known_bandage_instance_lambdas.Count > 16) {
+                List<(Item item, Limb limb)> staleKeys = null;
+                foreach (var kv in known_bandage_instance_lambdas) {
+                    if (kv.Key.item == null || kv.Key.limb == null) {
+                        staleKeys ??= new List<(Item item, Limb limb)>();
+                        staleKeys.Add(kv.Key);
+                    }
+                }
+                if (staleKeys != null) {
+                    for (int i = 0; i < staleKeys.Count; i++) {
+                        known_bandage_instance_lambdas.Remove(staleKeys[i]);
+                    }
+                }
+            }
+            if (item != null && limb != null) {
+                known_bandage_instance_lambdas[(item, limb)] = onUse;
+            }
+            if (item != null && !string.IsNullOrEmpty(item.id)) {
+                known_bandages_onuse_lambdas[item.id] = onUse;
+            }
+        }
 
         static void ResetMinigameOverriderStates() {
             DislocationMinigame_CheckForHit_MultiplayerPatch.lastreceived_bonepos = new Vector2(500, 0);
@@ -1425,7 +1456,7 @@ namespace Together {
 
             if (is_medical_minigame) {
                 if (minigame is BandageMinigame bmini) {
-                    known_bandages_onuse_lambdas[item.id] = bmini.OnUse;
+                    RegisterBandageLambda(item, limb, bmini.OnUse);
                     BandageMinigame_DoBandageAction_MultiplayerPatch.bandagethingcounter = 14; // to make one sound as soone as the player starts rolling
                 }
             }
@@ -1600,13 +1631,7 @@ namespace Together {
                                 if (lmini.lockProgress >= 1f && lmini.toDestroy && lmini.toDestroy.GetHealth() == 0f) {
                                     if (NetObjectRegistry.TryGetSyncInfoOrRegister(lmini.toDestroy.gameObject, out SyncInfo si)) {
                                         Multiplayer.Client_SendSimpleMessageToServer((byte)NetmsgId.SERVER_LockpickingMinigame_Finish_success, si.syncId, true);
-                                        EvidenceBag.Arm();
-                                        EvidenceBag.Line("lockpick client sent sync=" + si.syncId + " " + EvidenceBag.Building(lmini.toDestroy));
-                                    } else {
-                                        EvidenceBag.Line("lockpick client no sync " + EvidenceBag.Building(lmini.toDestroy));
                                     }
-                                } else if (lmini.toDestroy != null && (lmini.lockProgress >= 1f || lmini.toDestroy.GetHealth() <= 0.5f)) {
-                                    EvidenceBag.Line("lockpick client held progress=" + lmini.lockProgress.ToString("0.##") + " " + EvidenceBag.Building(lmini.toDestroy));
                                 }
                             } else if (__instance.currentMinigame is SyringeMinigame smgmini) {
                                 Limb l = WaterContainerItem_Inject_MultiplayerPatch.listen_to_limb;
@@ -1832,15 +1857,10 @@ namespace Together {
                     ) {
                     // fuck verification, let cheaters cheat
                     si.building.SetHealth(0f);
-                    EvidenceBag.Arm();
-                    EvidenceBag.Line("lockpick server ok client=" + clientId + " " + EvidenceBag.Building(si.building));
 
                     ServerMain.Server_AnnounceSound(si.transformPosition, "unlock", ServerMain.AllClientIds);
 
                 } else {
-                    EvidenceBag.Line("lockpick server deny client=" + clientId
-                        + " conscious=" + (pb != null && pb.body != null && pb.body.conscious)
-                        + " sync=" + (NetObjectRegistry.TryGetSyncInfo(building_syncid, out SyncInfo denied) ? denied.syncId.ToString() : "none"));
                     MinigameMPManager.Note("lockpick denied");
                     plr.Server_DoAlertSingle(Lang.MarkMsgAsLocaleKey("serverdeny_lockpick"));
                 }
@@ -2509,12 +2529,13 @@ namespace Together {
             reader.Get(out byte limbid);
 
             if (MedicalSync.Server_CheckCanHealerUseItemForLimb(clientId, targetplr, limbid, bandageid, out ScavPlayer healerPlr, out NetBody targetnb, out SyncInfo item_si)) {
-                if (MinigameBase_StartMinigame_MultiplayerPatch.known_bandages_onuse_lambdas.TryGetValue(item_si.item.id, out OnBandageUse onuse_lambda)) {
+                Limb limb = targetnb.body.limbs[limbid];
+                // 优先按具体 (物品实例, 目标肢体) 匹配包扎闭包，防止多人并发使用同 ID 绷带时治疗目标与物品耐久互相覆盖；未命中时回退按 item.id 兜底
+                if (MinigameBase_StartMinigame_MultiplayerPatch.known_bandage_instance_lambdas.TryGetValue((item_si.item, limb), out OnBandageUse onuse_lambda)
+                    || MinigameBase_StartMinigame_MultiplayerPatch.known_bandages_onuse_lambdas.TryGetValue(item_si.item.id, out onuse_lambda)) {
                     if (DebugHelp._DEV_VISUALISE_NET_EVENTS) {
                         DebugHelp.OnNetEvent(healerPlr.body.transform.position, $"S: bandaging bro {healerPlr.playerName} -> {targetnb.playerName} {item_si}");
                     }
-
-                    Limb limb = targetnb.body.limbs[limbid];
 
                     if (!healerPlr.IsLocal) {
                         healerPlr.GetCoUtilsInstance().SelectForMPOverride();
@@ -2530,8 +2551,8 @@ namespace Together {
                     bandagethingcounter++;
                     if (bandagethingcounter > 14) {
 
-                        // if someone is helping them, make em happier
-                        if (healerPlr != targetnb) {
+                        // 修正跨类型比较（ScavPlayer != NetBody 恒为真），仅在确实为他人包扎时给予心情加成
+                        if (healerPlr.netBody != targetnb) {
                             targetnb.body.happiness += 0.2f;
                         }
 
@@ -2836,8 +2857,6 @@ namespace Together {
                                 // must run CheckDamage - SetHealth(..., false) left capsules/openables
                                 // at 0 HP until something else hit them and finally destroyed them.
                                 kpses.building.SetHealth(0f);
-                                EvidenceBag.Arm();
-                                EvidenceBag.Line("keypad server ok " + EvidenceBag.Building(kpses.building));
                             }
                         }
 
@@ -2913,6 +2932,10 @@ namespace Together {
             return true;
         }
         static void Postfix(AmputationMinigame __instance) {
+            // 单人模式下 Prefix 未采样 og_adrenaline 直接放行，必须守卫以避免每帧将肾上腺素清零
+            if (!Net.IsRunning) {
+                return;
+            }
             PlayerCamera.main.body.adrenaline = og_adrenaline;
         }
     }

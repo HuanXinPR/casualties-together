@@ -154,14 +154,39 @@ public class TrackerTrader : BaseComponentTracker<TraderScript> {
         Camera.onPostRender += PinOpenTrader;
     }
 
+    // 校验当前钉住的商人仍处于合法可交易状态（存活、非敌对、血量 > 200f，且本地角色存活清醒并在 8 格内）
+    internal static bool CanKeepTradeMenuOpen(TraderScript trader) {
+        if (trader == null || trader.hostile)
+            return false;
+        if (!trader.TryGetComponent(out BuildingEntity b) || b == null || b.GetHealth() <= 200f)
+            return false;
+        if (!Util.TryGetLocalBody(out Body local) || local == null || !local.alive || !local.conscious)
+            return false;
+        return Vector2.Distance(trader.transform.position, local.transform.position) <= 8f;
+    }
+
+    internal static void ReleasePinnedTradeMenu(PlayerCamera cam) {
+        currentTrader = null;
+        if (cam == null)
+            return;
+        cam.currentTrader = null;
+        if (cam.tradeMenu != null && cam.tradeMenu.activeSelf)
+            cam.ToggleTradeMenu();
+    }
+
     // stock LateUpdate clears currentTrader, and the next Update closes the menu while it is empty.
     // onPreRender never ran on the trader. this camera callback is after OnWillRenderObject,
     // so the trader the menu was opened on wins over a neighbour.
     private static void PinOpenTrader(Camera _) {
-        if (!Util.IsInTradingMenu() || (currentTrader is null) || (PlayerCamera.main is null)) {
+        PlayerCamera cam = PlayerCamera.main;
+        if (!Util.IsInTradingMenu() || (cam is null)) {
             return;
         }
-        PlayerCamera.main.currentTrader = currentTrader;
+        if (!CanKeepTradeMenuOpen(currentTrader)) {
+            ReleasePinnedTradeMenu(cam);
+            return;
+        }
+        cam.currentTrader = currentTrader;
         TraderPinLog.Sample("pin");
         TrackerTrader tt = currentTrader.GetOrAddComponent<TrackerTrader>();
         tt.focused_body = Util.GetLocalBody();
@@ -407,6 +432,12 @@ static class TraderPinLog {
                 loggedMiss = true;
                 log.error("[traderpin] hold missed, opened trader is null");
             }
+            TrackerTrader.ReleasePinnedTradeMenu(cam);
+            return;
+        }
+        // 商人敌对/重伤或本地角色倒地/被击飞超过 8 格时立即解除钉住并关闭交易面板，防止锁死角色移动
+        if (!TrackerTrader.CanKeepTradeMenuOpen(opened)) {
+            TrackerTrader.ReleasePinnedTradeMenu(cam);
             return;
         }
         cam.currentTrader = opened;
@@ -606,7 +637,8 @@ public static class TraderScript_Threaten_MultiplayerPatch {
         if (Net.IsRunning) {
             if (Net.IsClient) {
 
-            } else {
+            } else if (!TraderCommit.Running) {
+                // TraderCommit.Pump 执行完毕后已统一广播快照，队列执行期间跳过重复广播
                 var tt = __instance.GetOrAddComponent<TrackerTrader>();
 
                 tt.Server_AnnounceTraderReputationState();
@@ -670,7 +702,9 @@ public static class TraderScript_TryHug_MultiplayerPatch {
                     }
                 }
 
-                tt.Server_AnnounceTraderReputationState();
+                // 避免与外层 TraderCommit.Pump 的收尾快照重复发送全量商品列表
+                if (!TraderCommit.Running)
+                    tt.Server_AnnounceTraderReputationState();
             }
         }
     }
@@ -741,7 +775,8 @@ public static class TraderScript_TryHaggle_MultiplayerPatch {
     static void Postfix(TraderScript __instance, ref float __state) {
         float num = __state - __instance.reputation;
 
-        if (Net.IsRunning) {
+        if (Net.IsRunning && !TraderCommit.Running) {
+            // 仅在非 TraderCommit 串行任务路径下补发快照，消除每次砍价双倍广播 CLIENT_TraderSnapshot
             var tt = __instance.GetOrAddComponent<TrackerTrader>();
             tt.Server_AnnounceTraderReputationState();
         }
@@ -990,6 +1025,7 @@ internal static class TraderScript_TryPurchase_MultiplayerPatch {
 
         if (
             ScavPlayer.TryGetPlayerAndBodyFromClientId(clientId, out ScavPlayer plr, out Body buyer) &&
+            buyer != null && buyer.conscious &&
             NetObjectRegistry.TryGetSyncInfoLive(trader_syncid, out SyncInfo isi) && isi.IsTrader() &&
             KM.DistanceCheck(buyer, isi, 20)
         ) {

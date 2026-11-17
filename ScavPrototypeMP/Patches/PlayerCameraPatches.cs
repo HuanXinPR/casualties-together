@@ -301,6 +301,10 @@ public static class PlayerCamera_Update_MultiplayerPatch {
                             showReturn = false;
                         }
 #endif
+                        // 房主自身死亡但房内仍有存活队友时，隐藏死亡小票上的快捷 Return 按钮，防止误触把存活队友强踢回主菜单（全灭后自动恢复显示，主动退房仍可走 Esc 菜单）
+                        if (showReturn && (__instance.body == null || !__instance.body.alive) && ScavPlayer.AllLivingPlayers.Count > 0) {
+                            showReturn = false;
+                        }
                         retur.gameObject.SetActive(showReturn);
                         //retur.GetComponent<TextMeshProUGUI>().text = Lang.Get("endscreencalories");
                     }
@@ -429,15 +433,16 @@ static class PlayerCamera_UIOverrideTryPickupFromWorld_MultiplayerPatch {
 
                 //make items in inventory not pick up if theyre not registered
                 if (!NetObjectRegistry.IsRegistered(pc.dragItem.gameObject) && NetObjectRegistry.ObjectShouldBeSynced(pc.dragItem.gameObject)) {
-                    NetObjectRegistry.SafeDestroyObject(pc.dragItem.gameObject);
-
-                    // dont allow picking up items in inventory that arent registered yet, cuz they will be soon
-                    //pc.dragItem = null;
+                    var unregisteredItem = pc.dragItem;
+                    NetObjectRegistry.SafeDestroyObject(unregisteredItem.gameObject);
 
                     if (__state == null) {
-                        Plugin.log.LogWarning($"User tried to drag a world item that is not registered yet! {pc.dragItem.name} at {pc.dragItem.transform.position} ");
+                        Plugin.log.LogWarning($"User tried to drag a world item that is not registered yet! {unregisteredItem.name} at {unregisteredItem.transform.position} ");
                         NetObjectRegistry.AlertObjectNotRegistered(true);
                     }
+
+                    // 销毁未注册世界物品后同步清空实例拖拽引用，防止后续拖拽逻辑继续持有悬空对象
+                    pc.dragItem = null;
 
                 }
 
@@ -481,13 +486,14 @@ static class PlayerCamera_UIOverrideTryPickupFromWorld_MultiplayerPatch {
 
 [HarmonyPatch(typeof(PlayerCamera), nameof(PlayerCamera.ToMainMenu))]
 static class PlayerCamera_ToMainMenu_MultiplayerPatch {
-    static void Prefix(WorldGeneration __instance) {
+    // 修正 __instance 参数类型为目标类 PlayerCamera，防止 Harmony 绑定失败跳过返回主菜单时的断连与 HUD 复位
+    static void Prefix(PlayerCamera __instance) {
 #if FULLGAME
         ConcurrentEndings.KeepSpectating = false;
         ConcurrentEndings.SuppressDeathScreen = false;
 #endif
         // dont carry someone elses health panel into the menu. it leaves the inventory hud off.
-        PlayerCamera_ToggleWoundView_MultiplayerPatch.CloseHealthPanel(PlayerCamera.main);
+        PlayerCamera_ToggleWoundView_MultiplayerPatch.CloseHealthPanel(__instance != null ? __instance : PlayerCamera.main);
 
         NetObjectRegistry.UnregisterAllObjectsButKeepInventory();
 
@@ -731,8 +737,9 @@ static class PlayerCamera_HandleWhileDragging_MultiplayerPatch {
                         UIInGame.StartPlayerInteractionMenu(nb);
                     }
                 } else {
-                    if (UIInGame.interaction_menu_target_body != null) { // dont open the inventory , cuz like i could be trying interacting with someone that is very close to me or something but idk man 
-                        __instance.radialOpen = false;
+                    // 光标位于自身躯体上按 Tab 开启轮盘背包时，关闭远端玩家交互菜单并保持轮盘开启，避免两者互相死锁
+                    if (UIInGame.interaction_menu_target_body != null) {
+                        UIInGame.StopPlayerInteractionMenu();
                     }
                 }
 
@@ -836,8 +843,8 @@ static class PlayerCamera_TryPickupFromUI_MultiplayerPatch {
 
             log.warn($"PlayerCamera.TryPickupFromUI:  User tried to drag an item from UI that is not registered yet! {dragItem?.id} ");
 
-            // dont allow picking up items in inventory that arent registered yet, cuz they will be soon
-            dragItem = null;
+            // 同步清空 PlayerCamera 实例上的 dragItem 引用（原代码仅清空局部变量导致悬空引用进入拖拽态）
+            __instance.dragItem = null;
 
             NetObjectRegistry.AlertObjectNotRegistered(true);
         }
@@ -1208,14 +1215,20 @@ static class PlayerCamera_StartSelfDestruct_MultiplayerPatch {
     public static readonly float SelfDestructIdentifier = 5434534; // just a random unique number
 
     static IEnumerator SelfDestructSequence(NetBody nb) {
+        if (nb == null || nb.body == null) {
+            yield break;
+        }
         var body = nb.body;
         List<knetid> to_who = ServerMain.AllClientIds.ToList();
-        if (nb.IsPlayer) {
+        if (nb.IsPlayer && nb.plr != null) {
             to_who.Remove(nb.plr.playerId);
         }
 
-        if (nb.IsBodyLocal())
+        // 进入协程前快照本地相机锁定状态，避免等待期间换体或退主菜单导致 finally 抛空引用或遗留 selfDestructActive 死锁
+        bool lockedLocalCam = nb.IsBodyLocal() && PlayerCamera.main != null;
+        if (lockedLocalCam) {
             PlayerCamera.main.selfDestructActive = true;
+        }
 
         try {
             var unchipped = nb.unchipped;
@@ -1224,6 +1237,9 @@ static class PlayerCamera_StartSelfDestruct_MultiplayerPatch {
                 body.happiness = -90;
                 body.talker.Talk(Locale.GetCharacter("suicide"), null, force: false, resetTalkTimer: true);
                 yield return new WaitForSeconds(2f);
+                if (nb == null || body == null) {
+                    yield break;
+                }
                 if (Body.censorMood) {
                     body.TryStartFibrillation(true);
                     body.vomiter.Vomit();
@@ -1232,15 +1248,27 @@ static class PlayerCamera_StartSelfDestruct_MultiplayerPatch {
                     body.vomiter.Vomit();
                     body.vomiter.Vomit();
                     yield return new WaitForSeconds(2f);
+                    if (nb == null || body == null) {
+                        yield break;
+                    }
                 } else {
                     var head = body.GetHead();
                     YOU_SHOULD_KILL_YOURSELF_NOOOW.SelfHarm_Copypasted(0, body, ref head);
                     yield return new WaitForSeconds(0.1f);
+                    if (nb == null || body == null) {
+                        yield break;
+                    }
                     body.Ragdoll();
                     yield return new WaitForSeconds(0.5f);
+                    if (nb == null || body == null) {
+                        yield break;
+                    }
                     body.Ragdoll();
                     body.consciousness *= 0.7f;
                     yield return new WaitForSeconds(1f);
+                    if (nb == null || body == null) {
+                        yield break;
+                    }
                 }
                 body.brainHealth = 0;
 
@@ -1250,8 +1278,14 @@ static class PlayerCamera_StartSelfDestruct_MultiplayerPatch {
                     body.talker.Talk(Locale.GetCharacter("selfdestruct"), null, force: false, resetTalkTimer: true);
                 ServerMain.Server_AnnounceSound(body.GetPosition(), "selfdestruct1", to_who);
                 yield return new WaitForSeconds(3f);
+                if (nb == null || body == null) {
+                    yield break;
+                }
                 body.eyeCloseTime = 10f;
                 yield return new WaitForSeconds(1.15f);
+                if (nb == null || body == null) {
+                    yield break;
+                }
 
                 ServerMain.Server_AnnounceSound(body.GetPosition(), "gore", to_who);
                 ServerMain.Server_InstantiateInstance(body.limbs[0].transform.position, 0, "BloodExplosion", to_who);
@@ -1260,6 +1294,9 @@ static class PlayerCamera_StartSelfDestruct_MultiplayerPatch {
                 nb.OnDamageEvent(new BodyDamageEvent(nb, nb, null, SelfDestructIdentifier));
 
                 yield return new WaitForSeconds(0.02f);
+                if (nb == null || body == null) {
+                    yield break;
+                }
                 body.brainHealth = 0f;
                 body.consciousness = 0f;
                 body.heartRate = 0f;
@@ -1271,8 +1308,9 @@ static class PlayerCamera_StartSelfDestruct_MultiplayerPatch {
                 body.RemoveEye();
             }
         } finally {
-            if (nb.IsBodyLocal())
+            if (lockedLocalCam && PlayerCamera.main != null) {
                 PlayerCamera.main.selfDestructActive = false;
+            }
         }
 
 
@@ -1345,9 +1383,9 @@ public static class vyosna_dawn_HandleUnconsciousScreen_Patch {
 static class MoodleManager_AddMoodle_Patch {
 
     static bool Prefix(MoodleManager __instance, ref int intensity) {
-        //add an intensity safeguard
-        if (intensity >= __instance.backgroundIcons.Length) {
-            intensity = __instance.backgroundIcons.Length;
+        // 钳制到有效数组下标区间 [0, Length - 1]，修复原先钳制到 Length 引发的越界异常
+        if (__instance != null && __instance.backgroundIcons != null && __instance.backgroundIcons.Length > 0) {
+            intensity = Mathf.Clamp(intensity, 0, __instance.backgroundIcons.Length - 1);
         }
         return true;
     }

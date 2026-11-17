@@ -48,32 +48,38 @@ internal static class ResettableDeflate
 	}
 
 	internal static bool TryInflateGzip(byte[] compressed, MemoryStream dest)
+		=> TryInflateGzip(compressed, 0, compressed?.Length ?? 0, dest);
+
+	// 支持直接在接收缓冲区切片上原位解压，避免先分配中间压缩段 byte[] 拷贝
+	internal static bool TryInflateGzip(byte[] compressed, int offset, int length, MemoryStream dest)
 	{
-		if (compressed == null || compressed.Length < 18)
+		if (compressed == null || dest == null || offset < 0 || length < 18 || offset > compressed.Length - length)
 			return false;
-		if (!TrySkipGzipHeader(compressed, out int payload))
+		int end = offset + length;
+		if (!TrySkipGzipHeader(compressed, offset, end, out int payload))
 			return false;
 
 		try
 		{
-			if (!Inflate(GzipInflater, compressed, payload, compressed.Length - payload, dest, out bool fedDummy))
+			if (!Inflate(GzipInflater, compressed, payload, end - payload, dest, out bool fedDummy))
 				return false;
 			if (fedDummy || GzipInflater.RemainingInput < 8)
 				return false;
 
-			int trailer = compressed.Length - GzipInflater.RemainingInput;
-			if (trailer < payload || trailer + 8 > compressed.Length)
+			// RemainingInput 相对于本次喂入切片末尾 end 计算，据此精确定位 8 字节 Gzip 尾部 (CRC32 + ISIZE)
+			int trailer = end - GzipInflater.RemainingInput;
+			if (trailer < payload || trailer + 8 > end)
 				return false;
 
 			uint crc = ReadU32(compressed, trailer);
 			uint size = ReadU32(compressed, trailer + 4);
-			int length = (int)dest.Length;
-			if (unchecked((uint)length) != size)
+			int outLen = (int)dest.Length;
+			if (unchecked((uint)outLen) != size)
 				return false;
 
 			Crc.Reset();
-			if (length > 0)
-				Crc.Update(new ArraySegment<byte>(dest.GetBuffer(), 0, length));
+			if (outLen > 0)
+				Crc.Update(new ArraySegment<byte>(dest.GetBuffer(), 0, outLen));
 			return unchecked((uint)Crc.Value) == crc;
 		}
 		catch (Exception)
@@ -175,41 +181,49 @@ internal static class ResettableDeflate
 		}
 	}
 
-	private static bool TrySkipGzipHeader(byte[] data, out int offset)
+	private static bool TrySkipGzipHeader(byte[] data, int offset, int end, out int payloadOffset)
 	{
-		offset = 0;
-		if (data.Length < 18 || data[0] != 0x1f || data[1] != 0x8b || data[2] != 8)
+		payloadOffset = 0;
+		if (end - offset < 18 || data[offset] != 0x1f || data[offset + 1] != 0x8b || data[offset + 2] != 8)
 			return false;
 
-		byte flags = data[3];
+		byte flags = data[offset + 3];
 		if ((flags & 0xe0) != 0)
 			return false;
 
-		int i = 10;
+		int i = offset + 10;
 		if ((flags & 4) != 0)
 		{
-			if (i + 2 > data.Length)
+			if (i + 2 > end)
 				return false;
 			int extra = data[i] | (data[i + 1] << 8);
 			i += 2 + extra;
 		}
 
 		if ((flags & 8) != 0)
-			i = SkipCString(data, i);
+		{
+			i = SkipCString(data, i, end);
+			if (i < 0)
+				return false;
+		}
 		if ((flags & 16) != 0)
-			i = SkipCString(data, i);
+		{
+			i = SkipCString(data, i, end);
+			if (i < 0)
+				return false;
+		}
 		if ((flags & 2) != 0)
 			i += 2;
-		if (i < 10 || i > data.Length - 8)
+		if (i < offset + 10 || i > end - 8)
 			return false;
 
-		offset = i;
+		payloadOffset = i;
 		return true;
 	}
 
-	private static int SkipCString(byte[] data, int i)
+	private static int SkipCString(byte[] data, int i, int end)
 	{
-		while (i < data.Length)
+		while (i >= 0 && i < end)
 		{
 			if (data[i++] == 0)
 				return i;

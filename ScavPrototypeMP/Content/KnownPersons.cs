@@ -37,18 +37,14 @@ public partial class KnownPersons : CasualtiesTogetherSingleton {
     static readonly HashSet<ulong> PLAYTESTERS = new();
 
 
+    // 禁用硬编码外部 SteamID 超级管理员与免封禁/免密码后门，确保房间管理权限完全归属本地房主与显式授权密码
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool IsSteamUserPrivileged(ulong user) {
-        return user == 0x110000112B2FDCD
-            || user == 0x11000011CB9B7BE
-            || user == 0x1100001345D812E
-            ;
+        return false;
     }
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool IsSteamUserMPDev(ulong user) {
-        return
-            user == 0x1100001345D812E
-            ;
+        return false;
     }
 
     public static void LoadTagsFor(ScavPlayer plr) {

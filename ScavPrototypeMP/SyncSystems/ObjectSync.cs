@@ -1,6 +1,7 @@
 using CasualtiesTogetherUtils;
 using HarmonyLib;
 using KrokV5Optimization;
+using LiteEntitySystem;
 using LiteNetLib;
 using LiteNetLib.Utils;
 using System;
@@ -138,7 +139,8 @@ public class SyncInfoGameObjectTracker : MonoBehaviour {
         if (this == null) {
             return "SyncInfo(NULL)";
         }
-        if (syncInfo == null && syncId != 0) {
+        // 当 syncInfo 尚未绑定（无论 syncId 是否为 0）时统一返回未注册描述，防止解引用 null syncInfo 抛 NRE
+        if (syncInfo == null) {
             return $"UnregisteredTracker({(IsBuilding() ? "building" : (IsItem() ? "item" : "UNKNOWN_TYPE"))}, id: {syncId}, res: {SyncInfo.GetItemID(this.gameObject) ?? this.gameObject.ToString()})";
         }
         return syncInfo.ToString();
@@ -162,8 +164,8 @@ public class SyncInfoGameObjectTracker : MonoBehaviour {
     public void UpdateDistanceChecks() {
         distanceCheckTime = 0;
 
-        Vector2 pos = transform.position;
-        // a packed item follows the bag, not the loose position it had when it was picked up.
+        // 若物体挂在 Container 或角色 Body 节点下，沿父链取根宿主坐标计算视距与模拟区，消除闭合包内物品停在旧坐标被误判远距慢 10 Tick
+        Vector2 pos = EffectiveWorldPosition();
         isInSimulationRange = Net.IsServer
             ? NetObjectRegistry.ShouldKeepRegistered(gameObject)
             : SharedMain.WorldInSimRange(pos);
@@ -178,11 +180,27 @@ public class SyncInfoGameObjectTracker : MonoBehaviour {
             var cdist = ScavPlayer.GetDistanceToNearestLivingPlayer(pos);
 
             playerDistanceSqr = cdist.Item2;
-        } else {
+        } else if (Camera.main != null) {
             playerDistanceSqr = KM.DistanceSqr(Camera.main.transform.position, pos);
         }
         isNearby = playerDistanceSqr < (12f * 12f);
         isVisible = playerDistanceSqr < (ItemSync.max_plr_view_distance_sqr);
+    }
+
+    Vector2 EffectiveWorldPosition() {
+        Transform cursor = transform;
+        Transform root = cursor;
+        while (cursor.parent != null) {
+            Transform p = cursor.parent;
+            if (p.GetComponent<Container>() != null
+                || p.GetComponent<InventorySlot>() != null
+                || p.GetComponent<Limb>() != null
+                || p.GetComponent<Body>() != null) {
+                root = p;
+            }
+            cursor = p;
+        }
+        return root.position;
     }
 
     static int VisualUpdateSlowerWhenNotVisible = 15;
@@ -249,10 +267,12 @@ public class SyncInfoGameObjectTracker : MonoBehaviour {
             return;
         }
 
-        // worn and held items follow the body every physics step.
+        // 穿戴与手持物品仅在字段实际发生变更时才执行完整打包，避免 50Hz 空跑反射/液体哈希与组件扫描
         if (HeldByBody()) {
             _wasLoose = false;
             visualUpdateTimer = 0;
+            if (!syncInfo.InactiveChanged())
+                return;
             syncInfo.WriteObjectIntoPacket();
             return;
         }
@@ -265,6 +285,11 @@ public class SyncInfoGameObjectTracker : MonoBehaviour {
         if (released || LooseAwake()) {
             visualUpdateTimer = 0;
             syncInfo.WriteObjectIntoPacket();
+            if (released) {
+                // 释放当帧显式标脏位置与旋转，防止原地垂直丢物时量化坐标未变导致客户端卡在 poseHold 悬空
+                syncInfo._position.MarkDirty();
+                syncInfo._rotation.MarkDirty();
+            }
             return;
         }
 

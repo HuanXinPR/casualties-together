@@ -1047,8 +1047,8 @@ public static class WoundView_UpdateView_MultiplayerPatch {
             healerLimbTagIcons.Clear();
 
 
-            if (wv.body.TryGetNetBody(out viewTarget)) {
-                var healersList = System.Linq.Enumerable.ToHashSet(ScavPlayer.AllLivingPlayers.Where(x => x.WoundviewTargetNetBodyId == viewTarget.netId && (Multiplayer.rules.DeadTextchat || x.IsAlive())));
+            if (wv.body != null && wv.body.TryGetNetBody(out viewTarget) && viewTarget.syncBody != null) {
+                var healersList = System.Linq.Enumerable.ToHashSet(ScavPlayer.AllLivingPlayers.Where(x => x != null && x.WoundviewTargetNetBodyId == viewTarget.netId && (Multiplayer.rules.DeadTextchat || x.IsAlive())));
 
                 // create player list on bottom right
                 if (
@@ -1636,14 +1636,6 @@ public static class PlayerCamera_ToggleWoundView_MultiplayerPatch {
                 muscle.SetNativeSize();
             }
         }
-
-        // stock head names change per species; refresh custom wound art for the viewed body.
-        WoundViewIntegration.RememberStock(head);
-        if (head.transform.childCount > 0) {
-            Image muscle = head.transform.GetChild(0).GetComponent<Image>();
-            WoundViewIntegration.RememberStock(muscle);
-        }
-        WoundViewIntegration.Apply(wv);
     }
 
     public static bool IsOpen() {
@@ -1672,7 +1664,22 @@ public static class PlayerCamera_ToggleWoundView_MultiplayerPatch {
             UIInGame.StopPlayerInteractionMenu();
     }
     public static void OpenSpecificBody(Body b, bool sound = true) {
-        if (IsOpen() && b == WoundView.view.body) {
+        if (b == null || PlayerCamera.main == null || WoundView.view == null) {
+            return;
+        }
+        // 先收起轮盘背包，避免原版 ToggleWoundView 因 radialOpen 为真仅关闭背包就直接返回而吞掉打开请求
+        PlayerCamera.main.radialOpen = false;
+        if (IsOpen()) {
+            if (b == WoundView.view.body) {
+                return;
+            }
+            // 面板已开启但目标不同时直接原地切换目标并刷新，避免再次调用 ToggleWoundView 误关面板
+            WoundView_SetTargetBody(b);
+            WoundView.view.UpdateView();
+            WoundView.view.timeOpen = 0f;
+            if (sound) {
+                PlayerCamera.main.PlayUISound(PlayerCamera.UISoundType.HealthPanelOn);
+            }
             return;
         }
         body_to_open = b;
@@ -1696,6 +1703,15 @@ public static class PlayerCamera_ToggleWoundView_MultiplayerPatch {
             return false;
         }
 
+        // 本地角色开着健康面板暴毙且尚未进入观战时，原版 ToggleWoundView 会因 !body.alive 直接返回，导致面板锁死且阻塞 Esc 暂停菜单
+        if (IsOpen() && (__instance.body == null || !__instance.body.alive) && !UIInGame.SpectatorModeActive) {
+            CloseHealthPanel(__instance);
+            if (sound) {
+                __instance.PlayUISound(PlayerCamera.UISoundType.Close);
+            }
+            return false;
+        }
+
 
         if (!IsOpen()) { // woundview will get activated now
 
@@ -1707,6 +1723,10 @@ public static class PlayerCamera_ToggleWoundView_MultiplayerPatch {
                         body_to_open = b;
                     }
                 }
+            }
+
+            if (body_to_open != null) {
+                __instance.radialOpen = false;
             }
 
             if (body_to_open == null && UIInGame.SpectatorModeActive && Spectator.GetCameraFollow() != null && Spectator.GetCameraFollow().TryGetComponent(out Body targetbody)) {
@@ -1729,10 +1749,23 @@ public static class PlayerCamera_ToggleWoundView_MultiplayerPatch {
             view.SetActive(!view.activeSelf);
             WoundView.view.UpdateView();
             WoundView.view.timeOpen = 0f;
-            __instance.mainView.SetActive(!__instance.mainView.activeSelf);
+            if (__instance.mainView != null) {
+                __instance.mainView.SetActive(!view.activeSelf);
+            }
             return false;
         }
         return true;
+    }
+
+    // 兜底保证 mainView 与 woundView 严格互斥反相，防止 UpdateView 抛异常导致 HUD 永久隐身并阻断当帧输入
+    public static Exception Finalizer(PlayerCamera __instance, Exception __exception) {
+        if (__instance != null && __instance.mainView != null && __instance.woundView != null) {
+            __instance.mainView.SetActive(!__instance.woundView.activeSelf);
+        }
+        if (__exception != null) {
+            log.error("ToggleWoundView UpdateView异常已拦截恢复HUD: " + __exception);
+        }
+        return null;
     }
 }
 
@@ -2682,113 +2715,119 @@ internal class MedicalSync : CasualtiesTogetherSingleton {
     static int _mischealthsync_cur_body = 0;
     static int _healthsync_cur_body = 0;
     private IEnumerator HealthUpdateSyncClients() {
+        // 使用 try/finally 保证任何跨帧实体销毁或异常都不会让计时器卡在负值冻死周期健康同步
+        try {
+            if (Util.IsWorldGenerated() && Net.IsRunning && MedicalSync.CanSyncHealth()) {
 
-        if (Util.IsWorldGenerated() && Net.IsRunning && MedicalSync.CanSyncHealth()) {
+                { // shouldnt be here but whatever i needed to sync the painkiller state
+                    var tosync = new List<NetBody>();
+                    int bytecounter = 0;
 
-            { // shouldnt be here but whatever i needed to sync the painkiller state
-                var tosync = new List<NetBody>();
-                int bytecounter = 0;
+                    LiteNetLib.Utils.NetDataWriter writer;
 
-                LiteNetLib.Utils.NetDataWriter writer;
+                    // SYNC MISC STATES LIKE PAINKILLER 
+                    {
 
-                // SYNC MISC STATES LIKE PAINKILLER 
-                {
-
-                    int fullpacksize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(CharacterHealthPainkillerStateSyncPacket)) + 8 + 2;
+                        int fullpacksize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(CharacterHealthPainkillerStateSyncPacket)) + 8 + 2;
 
 
-                    writer = Net.CreateWriter(NetmsgId.CLIENT_HealthPainkillerSync);
+                        writer = Net.CreateWriter(NetmsgId.CLIENT_HealthPainkillerSync);
 
-                    while (true) {
+                        while (true) {
 
-                        var dobreak = false;
-                        if (_mischealthsync_cur_body >= NetBody.all_instances.Count()) {
-                            _mischealthsync_cur_body = 0;
-                            dobreak = true;
-                        }
-                        if (bytecounter + fullpacksize >= 1000) {
-                            // next packet will go beyond max udp packet size
-                            dobreak = true;
-                        }
-
-                        if (dobreak) {
-
-                            timer_HealthUpdateSyncClients = -5;
-                            yield return null;
-                            tosync.RemoveAll(x => x.body == null);
-
-                            // send the packet
-                            if (tosync.Count > 0) {
-
-                                writer.SetPosition(sizeof(NetmsgId)); // set position to 0 (i am reusing same writer for multiple packets)
-
-                                writer.Put(tosync[0].netId);
-                                writer.Put(new CharacterHealthPainkillerStateSyncPacket(tosync[0].body));
-                                for (int i = 1; i < tosync.Count; i++) {
-                                    writer.Put(true);
-                                    writer.Put(tosync[i].netId);
-                                    writer.Put(new CharacterHealthPainkillerStateSyncPacket(tosync[i].body));
-                                }
-                                writer.Put(false);
-
-                                Net.Server_SendToClients(DeliveryMethod.Unreliable, writer, clientIds: ServerMain.AllClientIdsExceptHost);
-
-                                bytecounter = 0;
-                                tosync.Clear();
+                            var dobreak = false;
+                            if (_mischealthsync_cur_body >= NetBody.all_instances.Count()) {
+                                _mischealthsync_cur_body = 0;
+                                dobreak = true;
+                            }
+                            if (bytecounter + fullpacksize >= 1000) {
+                                // next packet will go beyond max udp packet size
+                                dobreak = true;
                             }
 
+                            if (dobreak) {
 
-                            break;
+                                timer_HealthUpdateSyncClients = -5;
+                                yield return null;
+                                // 跨帧后过滤已销毁或尚未绑定/已解绑 SyncBody 的实例，避免访问 netId 抛异常
+                                tosync.RemoveAll(x => x == null || x.body == null || x.syncBody == null);
+
+                                // send the packet
+                                if (tosync.Count > 0) {
+
+                                    writer.SetPosition(sizeof(NetmsgId)); // set position to 0 (i am reusing same writer for multiple packets)
+
+                                    writer.Put(tosync[0].netId);
+                                    writer.Put(new CharacterHealthPainkillerStateSyncPacket(tosync[0].body));
+                                    for (int i = 1; i < tosync.Count; i++) {
+                                        writer.Put(true);
+                                        writer.Put(tosync[i].netId);
+                                        writer.Put(new CharacterHealthPainkillerStateSyncPacket(tosync[i].body));
+                                    }
+                                    writer.Put(false);
+
+                                    Net.Server_SendToClients(DeliveryMethod.Unreliable, writer, clientIds: ServerMain.AllClientIdsExceptHost);
+
+                                    bytecounter = 0;
+                                    tosync.Clear();
+                                }
+
+
+                                break;
+                            }
+
+                            var nb = NetBody.all_instances[_mischealthsync_cur_body];
+                            _mischealthsync_cur_body++;
+
+                            if (nb == null || nb._SERVER_healthsync_skip_frame || nb.body == null || nb.syncBody == null || !nb.body.TryGetComponent<Painkillers>(out var _)) {
+                                continue;
+                            }
+
+                            tosync.Add(nb);
+                            bytecounter += fullpacksize;
+
+                            yield return null; // wait a frame
                         }
 
-                        var nb = NetBody.all_instances[_mischealthsync_cur_body];
-                        _mischealthsync_cur_body++;
+                        // WRITER END;
 
-                        if (nb._SERVER_healthsync_skip_frame || nb.body == null || !nb.body.TryGetComponent<Painkillers>(out var _)) {
-                            continue;
-                        }
+                    }
+                }
 
-                        tosync.Add(nb);
-                        bytecounter += fullpacksize;
 
-                        yield return null; // wait a frame
+                while (true) {
+                    if (_healthsync_cur_body >= NetBody.all_instances.Count()) {
+                        _healthsync_cur_body = 0;
+                        break;
                     }
 
-                    // WRITER END;
-
-                }
-            }
-
-
-            while (true) {
-                if (_healthsync_cur_body >= NetBody.all_instances.Count()) {
-                    _healthsync_cur_body = 0;
-                    break;
-                }
-
-                var npc = NetBody.all_instances[_healthsync_cur_body];
-                _healthsync_cur_body++;
-
-                if (npc._SERVER_healthsync_skip_frame) {
-                    npc._SERVER_healthsync_skip_frame = false;
+                    var npc = NetBody.all_instances[_healthsync_cur_body];
                     _healthsync_cur_body++;
-                    continue;
-                }
-                if (!npc.body.alive) {
-                    npc._SERVER_healthsync_skip_frame = !npc._SERVER_healthsync_skip_frame;
+
+                    if (npc == null || npc.body == null || npc.syncBody == null) {
+                        continue;
+                    }
+
+                    // 游标上方已递增一次，此处仅消费跳过标记，不再二次递增以免漏掉下一个活体角色
+                    if (npc._SERVER_healthsync_skip_frame) {
+                        npc._SERVER_healthsync_skip_frame = false;
+                        continue;
+                    }
+                    if (!npc.body.alive) {
+                        npc._SERVER_healthsync_skip_frame = !npc._SERVER_healthsync_skip_frame;
+                    }
+
+                    Server_SendCharacterHealth(npc);
+
+                    yield return null;
                 }
 
-                Server_SendCharacterHealth(npc);
-
-                yield return null;
             }
 
+            yield return null;
+        } finally {
+            timer_HealthUpdateSyncClients = 0;
         }
-
-
-        yield return null;
-
-        timer_HealthUpdateSyncClients = 0;
     }
 
 
@@ -2864,7 +2903,7 @@ internal class MedicalSync : CasualtiesTogetherSingleton {
 
         reader.Get(out knetid who);
         reader.Get(out CharacterHealthPainkillerStateSyncPacket health);
-        if (NetBody.TryGetNetBodyFromId(who, out var nb)) {
+        if (NetBody.TryGetNetBodyFromId(who, out var nb) && nb.body != null) {
             health.Apply(nb.body);
         }
 
@@ -2874,7 +2913,8 @@ internal class MedicalSync : CasualtiesTogetherSingleton {
                 reader.Get(out knetid who1);
                 reader.Get(out CharacterHealthPainkillerStateSyncPacket health1);
 
-                if (NetBody.TryGetNetBodyFromId(who, out var nb1)) {
+                // 修正目标变量名，避免将后续角色的止痛药数据反复覆盖到首个角色 who 身上
+                if (NetBody.TryGetNetBodyFromId(who1, out var nb1) && nb1.body != null) {
                     health1.Apply(nb1.body);
                 }
             } else {
@@ -3089,7 +3129,8 @@ internal class MedicalSync : CasualtiesTogetherSingleton {
         if (
             targetlimb.TryGetNetBodyAndLimb(out var target_nb, out var target_limb) &&
             ScavPlayer.TryGetPlayerAndBodyFromClientId(who_clientId, out var healer, out var healer_body) &&
-            healer.IsLocal && // check if its not me, cuz on my screen ive already done it visually, even if im host it was still done server side
+            // 仅在非施救者本人的客户端执行视觉与组件同步（施救者本地已执行过，原代码漏写取反导致转发恒死）
+            !healer.IsLocal &&
             NetObjectRegistry.TryGetSyncInfo(item_syncid, out var si)
         ) {
             MinigameBase_StartMinigame_MultiplayerPatch.ignore_next_mgstart_cuz_its_not_me = true;

@@ -52,6 +52,8 @@ public class MultiplayerRuleByteAttribute : Attribute {
         postfix = unit;
     }
     public MultiplayerRuleByteAttribute(byte min, byte max, string unit = "") {
+        // 补齐下界字段赋值，避免规则校验时最小阈值退化为 0
+        this.min = min;
         limit = max;
         postfix = unit;
     }
@@ -1510,10 +1512,13 @@ S_LerpFactor: {_entityManager.LerpFactor}";
         }
 
 
-        if (rules.VoicechatQuality >= Voicechat.STANDART_FREQUENCIES.Length || rules.VoicechatQuality < 0) {
-            rules.VoicechatQuality = (byte)Voicechat.STANDART_FREQUENCIES.Length;
+        // 钳制到有效采样率数组末位下标 Length - 1，消除原先赋为 Length 后紧接着索引越界的崩溃
+        if (Voicechat.STANDART_FREQUENCIES != null && Voicechat.STANDART_FREQUENCIES.Length > 0) {
+            if (rules.VoicechatQuality >= Voicechat.STANDART_FREQUENCIES.Length) {
+                rules.VoicechatQuality = (byte)(Voicechat.STANDART_FREQUENCIES.Length - 1);
+            }
+            Voicechat.SAMPLE_RATE = Voicechat.STANDART_FREQUENCIES[rules.VoicechatQuality];
         }
-        Voicechat.SAMPLE_RATE = Voicechat.STANDART_FREQUENCIES[rules.VoicechatQuality];
 
         if (Util.IsInWorld()) {
             try {

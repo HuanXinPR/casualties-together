@@ -69,7 +69,12 @@ public class Chat : CasualtiesTogetherSingleton {
     void Update() {
 
 
-        if (!Net.IsRunning) { return; }
+        if (!Net.IsRunning) {
+            // 网络断开或回主菜单时立即释放聊天焦点，防止静态标志残留锁死后续局内输入
+            CHATforceinputfocus = false;
+            CHAT_textbox_input_focused = false;
+            return;
+        }
 
         if (scrollbar_area != null) {
             if (UnityEngine.Input.GetKeyDown(KeyCode.Mouse0) && UIBullshit.IsCursorInGUIRect((Rect)Chat.scrollbar_area)) {
@@ -417,7 +422,14 @@ public class Chat : CasualtiesTogetherSingleton {
 
 
                 if (CHAT_textbox_input_focused) {
-                    if (Event.current.keyCode == KeyCode.Escape) {
+                    // Unity IMGUI 文本框点击框外世界或 uGUI 时不会自动失焦，显式检测框外点击以解除全键盘输入锁死
+                    if (Event.current.type == EventType.MouseDown
+                        && !chatinputrect.Contains(Event.current.mousePosition)
+                        && (scrollbar_area == null || !scrollbar_area.Value.Contains(Event.current.mousePosition))) {
+                        CHATforceinputfocus = false;
+                        CHAT_textbox_input_focused = false;
+                        GUI.FocusControl("");
+                    } else if (Event.current.keyCode == KeyCode.Escape) {
 
                         CHATforceinputfocus = false;
                         CHAT_textbox_input_focused = false;

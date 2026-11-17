@@ -43,10 +43,6 @@ internal static class BagPlace
 		internal float Until;
 	}
 
-	private static MethodInfo _write;
-	private static MethodInfo _force;
-	private static MethodInfo _announce;
-	private static IDictionary _registry;
 	private static readonly List<Pending> Waiting = new List<Pending>(16);
 	private static readonly List<Delay> Announcing = new List<Delay>(8);
 	private static readonly List<SyncInfo> SweepList = new List<SyncInfo>(256);
@@ -62,19 +58,6 @@ internal static class BagPlace
 	{
 		if (harmony == null)
 			return;
-
-		_write = AccessTools.Method(typeof(SyncInfo), "WriteContainerInfo");
-		Type sync = AccessTools.TypeByName("Together.ItemSync");
-		_force = sync != null
-			? AccessTools.Method(sync, "Container_ForceLoadItem", new[] { typeof(Item), typeof(Container) })
-			: null;
-		_announce = sync != null
-			? AccessTools.Method(sync, "Client_AnnounceContainerChange", new[] { typeof(SyncInfo) })
-			: null;
-		if (_force == null)
-			OptimizerMain.Log.LogWarning("[KrokV5Optimization] bag place missed Container_ForceLoadItem");
-		if (_announce == null)
-			OptimizerMain.Log.LogWarning("[KrokV5Optimization] bag place missed Client_AnnounceContainerChange");
 
 		MethodInfo load = AccessTools.Method(typeof(Container), "LoadItem", new[] { typeof(Item) });
 		if (load != null)
@@ -174,8 +157,16 @@ internal static class BagPlace
 	{
 		if (__instance == null || Net.IsServer)
 			return;
-		if (!Settle(__instance))
-			Remember(__instance);
+		if (Settle(__instance))
+		{
+			// 当帧已直接完成装包，清理 FixInvSync 中刚入队的等待项
+			FixInvSync.ClearManaged(__instance);
+			return;
+		}
+		// 若已由 FixInvSync 托管重试，不再重复加入 BagPlace.Waiting，避免双队列重复轮询
+		if (FixInvSync.Manages(__instance))
+			return;
+		Remember(__instance);
 	}
 
 	// true when there is nothing left to do for this item.
@@ -206,12 +197,10 @@ internal static class BagPlace
 			return true;
 		}
 
-		if (_force == null)
-			return false;
-
 		try
 		{
-			_force.Invoke(null, new object[] { item, box });
+			// 直接调用同程序集静态方法，消除 MethodInfo.Invoke 数组分配与反射开销
+			ItemSync.Container_ForceLoadItem(item, box);
 		}
 		catch (Exception ex)
 		{
@@ -309,7 +298,7 @@ internal static class BagPlace
 	// try the held announce again. a real send drops it. a bag that is still nameless stays until the wait ends, and is never sent as an unload.
 	private static void RetryAnnounces()
 	{
-		if (Announcing.Count == 0 || _announce == null)
+		if (Announcing.Count == 0)
 			return;
 		float now = Time.realtimeSinceStartup;
 		for (int i = Announcing.Count - 1; i >= 0; i--)
@@ -328,7 +317,8 @@ internal static class BagPlace
 			try
 			{
 				_blocked = false;
-				_announce.Invoke(null, new object[] { row.Info });
+				// 直接调用同程序集 ItemSync.Client_AnnounceContainerChange，移除反射调用
+				ItemSync.Client_AnnounceContainerChange(row.Info);
 			}
 			catch (Exception ex)
 			{
@@ -348,19 +338,18 @@ internal static class BagPlace
 	// longer matches the parent is written again, and other clients follow.
 	private static void Sweep()
 	{
-		if (_write == null)
-			return;
 		if (!_sweeping)
 		{
 			if (Time.realtimeSinceStartup < _sweepNext)
 				return;
-			IDictionary map = Registry();
 			SweepList.Clear();
+			// 直接遍历泛型注册表 Values，消除非泛型 IDictionary 枚举装箱与反射查字段开销
+			Dictionary<GameObject, SyncInfo> map = NetObjectRegistry.SyncRegistry;
 			if (map != null)
 			{
-				foreach (DictionaryEntry entry in map)
+				foreach (SyncInfo si in map.Values)
 				{
-					if (entry.Value is SyncInfo si)
+					if (si != null)
 						SweepList.Add(si);
 				}
 			}
@@ -393,7 +382,7 @@ internal static class BagPlace
 			return;
 		try
 		{
-			_write.Invoke(si, null);
+			si.WriteContainerInfo();
 		}
 		catch (Exception ex)
 		{
@@ -447,7 +436,7 @@ internal static class BagPlace
 	// host. register the item and the bag, then store the live parent. client NewGO deletes an unregistered object, so this does not run there.
 	private static void Publish(Item item, GameObject box)
 	{
-		if (!Net.IsServer || item == null || _write == null)
+		if (!Net.IsServer || item == null)
 			return;
 		if (ItemSync.SuppressContainerWrite > 0) {
 			if (ItemSync.ParentTestSwap)
@@ -462,7 +451,8 @@ internal static class BagPlace
 				return;
 			if (LinkMissing(item))
 				return;
-			_write.Invoke(si, null);
+			// 直接调用 internal SyncInfo.WriteContainerInfo，消除反射调用
+			si.WriteContainerInfo();
 		}
 		catch (Exception ex)
 		{
@@ -489,18 +479,6 @@ internal static class BagPlace
 		if (NetObjectRegistry.IsRegistered(go) || !NetObjectRegistry.ObjectShouldBeSynced(go))
 			return;
 		NetObjectRegistry.NewGO(go);
-	}
-
-	// the live sync map. the lookup is cached.
-	private static IDictionary Registry()
-	{
-		if (_registry != null)
-			return _registry;
-		FieldInfo field = AccessTools.Field(typeof(NetObjectRegistry), "SyncRegistry");
-		if (field == null)
-			return null;
-		_registry = field.GetValue(null) as IDictionary;
-		return _registry;
 	}
 
 	// SyncInfo.item throws when the object is not an item. those entries are skipped.

@@ -1881,9 +1881,8 @@ public static class Util {
 
 
 
+    // OptimizerMain 已为这四个方法挂载 FixUtil* Harmony Prefix 池化快路径；此处仅保留标准流回退实现，避免锁竞争或回退时双重执行 Try()
     public static byte[] Compress(byte[] data) {
-        if (KrokV5Optimization.FixUtilCompress.Try(data, out byte[] pooled))
-            return pooled;
         using var outputstream = new MemoryStream();
         using (var gzipstream = new GZipStream(outputstream, System.IO.Compression.CompressionLevel.Optimal)) {
             gzipstream.Write(data, 0, data.Length);
@@ -1892,8 +1891,6 @@ public static class Util {
     }
 
     public static byte[] Decompress(byte[] compressed_data) {
-        if (KrokV5Optimization.FixUtilDecompress.Try(compressed_data, out byte[] pooled))
-            return pooled;
         using var inputstream = new MemoryStream(compressed_data);
         using var gzipstream = new GZipStream(inputstream, CompressionMode.Decompress);
         using var outputstream = new MemoryStream();
@@ -1903,8 +1900,6 @@ public static class Util {
 
 
     public static byte[] CompressDeflate(byte[] data) {
-        if (KrokV5Optimization.FixUtilCompressDeflate.Try(data, out byte[] pooled))
-            return pooled;
         using var outputstream = new MemoryStream();
         using (var gzipstream = new DeflateStream(outputstream, System.IO.Compression.CompressionLevel.Optimal)) {
             gzipstream.Write(data, 0, data.Length);
@@ -1913,8 +1908,6 @@ public static class Util {
     }
 
     public static byte[] DecompressDeflate(byte[] compressed_data) {
-        if (KrokV5Optimization.FixUtilDecompressDeflate.Try(compressed_data, out byte[] pooled))
-            return pooled;
         using var inputstream = new MemoryStream(compressed_data);
         using var gzipstream = new DeflateStream(inputstream, CompressionMode.Decompress);
         using var outputstream = new MemoryStream();
