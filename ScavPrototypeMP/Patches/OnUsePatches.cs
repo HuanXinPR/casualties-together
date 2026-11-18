@@ -153,6 +153,7 @@ public static class DrillPod_OnUse_MultiplayerPatch {
             return false;
         }
         si.SetIgnoreTimeForRoundTrip();
+        si.AwaitServerAck();
         Multiplayer.Client_SendSimpleMessageToServer((byte)NetmsgId.SERVER_DrillPodRepairTypeShit, si.syncId, true);
         return false;
     }
@@ -163,6 +164,7 @@ public static class DrillPod_OnUse_MultiplayerPatch {
         log.l($"Server_DrillPodRepairTypeShit actually works lol {clientId} ");
 #endif
         reader.Get(out knetid bioterminal_syncid);
+        using var _ack = UseAck.After(clientId, bioterminal_syncid);
 
         ScavPlayer user = null;
         Body body = null;
@@ -436,10 +438,8 @@ public static class Openable_OnUse_MultiplayerPatch {
             BuildingEntity building = __instance.GetComponent<BuildingEntity>();
             bool opened = synced && building != null && building.GetHealth() == 0f;
             if (opened) {
-                //success
-
                 si.SetIgnoreTimeForRoundTrip();
-
+                si.AwaitServerAck();
                 Multiplayer.Client_SendSimpleMessageToServer((byte)NetmsgId.SERVER_OpenableOpenTypeShit, si.syncId, true);
             }
         }
@@ -447,8 +447,8 @@ public static class Openable_OnUse_MultiplayerPatch {
 
     [ServerReceiver((byte)NetmsgId.SERVER_OpenableOpenTypeShit)]
     static void Server_OpenableOpenTypeShit(knetid clientId, LiteNetLib.Utils.NetDataReader reader) {
-
         reader.Get(out knetid bioterminal_syncid);
+        using var _ack = UseAck.After(clientId, bioterminal_syncid);
 
         ScavPlayer user;
         Body body;
@@ -456,16 +456,15 @@ public static class Openable_OnUse_MultiplayerPatch {
         SyncInfo si = null;
         if (ScavPlayer.TryGetPlayerAndBodyFromClientId(clientId, out user, out body) &&
             NetObjectRegistry.TryGetSyncInfo(bioterminal_syncid, out si) &&
-            si.go.TryGetComponent<Openable>(out openalbe) && openalbe.instantOpen && // ONLY INSTANTOPEN SHIT IS SENT HERE !!!!!!!!!!!!!
+            si.go != null &&
+            si.go.TryGetComponent<Openable>(out openalbe) && openalbe.instantOpen &&
             (clientId == 0 ||
-             (user.body.conscious &&
-                si.IsBuilding() &&
-                 KM.DistanceCheck(body, si.building, 20)
-
+             (user.body != null &&
+              user.body.conscious &&
+              si.IsBuilding() &&
+              KM.DistanceCheck(body, si.building, 20)
             ))
         ) {
-
-
             if (clientId != 0) {
                 openalbe.OnUse();
             }
@@ -479,43 +478,33 @@ public static class Openable_OnUse_MultiplayerPatch {
 #endif
     }
 
-
 }
-
-
-
-
-
-
-
-
-
-
 
 [HarmonyPatch(typeof(ScrapEaterScript), nameof(ScrapEaterScript.OnUse))]
 public static class ScrapEaterScript_OnUse_MultiplayerPatch {
 
-
     static void Prefix(ScrapEaterScript __instance) {
-        if (Net.IsRunning) {
-            if (!PlayerCamera.main.body.FindByIdThorough("scrapmetal", out var it)) {
-                return;
-            }
+        if (!Net.IsRunning || PlayerCamera.main == null || PlayerCamera.main.body == null) {
+            return;
+        }
+        if (!PlayerCamera.main.body.FindByIdThorough("scrapmetal", out var it)) {
+            return;
+        }
 
-            if (NetObjectRegistry.TryGetSyncInfo(__instance.gameObject, out var si)) {
-                //success
-
+        if (NetObjectRegistry.TryGetSyncInfo(__instance.gameObject, out var si)) {
 #if DEBUG
-                Plugin.log.LogWarning($"Client_SendSimpleMessageToServer  ScrapEaterScriptUse ");
+            Plugin.log.LogWarning($"Client_SendSimpleMessageToServer  ScrapEaterScriptUse ");
 #endif
-
-                si.SetIgnoreTimeForRoundTrip();
-
-                Multiplayer.Client_SendSimpleMessageToServer((byte)NetmsgId.SERVER_ScrapEaterScriptUse, si.syncId, true);
+            si.SetIgnoreTimeForRoundTrip();
+            si.AwaitServerAck();
+            // 原版 ScrapEaterScript.OnUse 会在客户端本地将 it.condition 归零；必须同步锁定该废铁的 SyncInfo 防在途快照回滚耐久（修复 PR #61 遗漏）
+            if (it != null && NetObjectRegistry.TryGetSyncInfo(it.gameObject, out SyncInfo scrapSi) && scrapSi != null) {
+                scrapSi.SetIgnoreTimeForRoundTrip();
+                scrapSi.AwaitServerAck();
             }
+            Multiplayer.Client_SendSimpleMessageToServer((byte)NetmsgId.SERVER_ScrapEaterScriptUse, si.syncId, true);
         }
     }
-
 
     [ServerReceiver((byte)NetmsgId.SERVER_ScrapEaterScriptUse)]
     static void Server_ScrapEaterScriptUse(knetid clientId, LiteNetLib.Utils.NetDataReader reader) {
@@ -523,59 +512,68 @@ public static class ScrapEaterScript_OnUse_MultiplayerPatch {
         log.l($"Server_ScrapEaterScriptUse actually works lol {clientId} ");
 #endif
         reader.Get(out knetid bioterminal_syncid);
+        knetid scrapSyncId = default;
+        SyncInfo scrapSi = null;
+        Item it = null;
+        bool hasPlayer = ScavPlayer.TryGetPlayerAndBodyFromClientId(clientId, out ScavPlayer user, out Body body);
+        if (hasPlayer && body != null && body.FindByIdThorough("scrapmetal", out it) && it != null
+            && NetObjectRegistry.TryGetSyncInfo(it.gameObject, out scrapSi) && scrapSi != null) {
+            scrapSyncId = scrapSi.syncId;
+        }
 
-        ScavPlayer user;
-        Body body;
         ScrapEaterScript ses = null;
         SyncInfo si = null;
-        if (ScavPlayer.TryGetPlayerAndBodyFromClientId(clientId, out user, out body) &&
-            NetObjectRegistry.TryGetSyncInfo(bioterminal_syncid, out si) &&
-            si.go.TryGetComponent<ScrapEaterScript>(out ses) && // ONLY INSTANTOPEN SHIT IS SENT HERE !!!!!!!!!!!!!
-            (clientId == 0 ||
-             (user.body.conscious &&
-                si.IsBuilding() &&
-                 KM.DistanceCheck(body, si.building, 20)
-
-            ))
-        ) {
+        try {
+            if (hasPlayer &&
+                NetObjectRegistry.TryGetSyncInfo(bioterminal_syncid, out si) &&
+                si.go != null &&
+                si.go.TryGetComponent<ScrapEaterScript>(out ses) &&
+                (clientId == 0 ||
+                 (user.body != null &&
+                  user.body.conscious &&
+                  si.IsBuilding() &&
+                  KM.DistanceCheck(body, si.building, 20)
+                ))
+            ) {
 #if DEBUG
-            Plugin.log.LogWarning($" Server_ScrapEaterScriptUse    IS WORKING   YAYYAAYAYYAYAYAYA  {user}  si: {si} ");
+                Plugin.log.LogWarning($" Server_ScrapEaterScriptUse    IS WORKING   YAYYAAYAYYAYAYAYA  {user}  si: {si} ");
 #endif
-
-            //OG: ScrapEaterScript.OnUse   V5t4  ENTIRE FUNCTION STOLEN
-
-            if (!body.FindByIdThorough("scrapmetal", out var it)) {
-                return;
-            }
-            if (DebugHelp._DEV_VISUALISE_NET_EVENTS) DebugHelp.OnNetEvent(si.go.transform.position, $"S: ScrapEaterScript open {user}, si:{si}");
-
-            if (clientId != 0) { // is not host
-
-                ses.scrapAmount += it.condition;
-                it.condition = 0f;
-                if (!(ses.scrapAmount >= ScrapEaterScript.target)) {
+                if (it == null) {
                     return;
                 }
-                ses.build.Backgroundify();
-                Collider2D[] array = Physics2D.OverlapCircleAll(ses.transform.position, 2f);
-                for (int i = 0; i < array.Length; i++) {
-                    if (array[i].TryGetComponent<BuildingEntity>(out var component) && component.id == "reinforceddoor") {
-                        component.Backgroundify();
+                if (DebugHelp._DEV_VISUALISE_NET_EVENTS) DebugHelp.OnNetEvent(si.go.transform.position, $"S: ScrapEaterScript open {user}, si:{si}");
+
+                if (clientId != 0) {
+                    ses.scrapAmount += it.condition;
+                    it.condition = 0f;
+                    if (scrapSi != null && !scrapSi.IsDestroyed) {
+                        scrapSi.WriteObjectIntoPacket();
+                    }
+                    if (!(ses.scrapAmount >= ScrapEaterScript.target)) {
+                        return;
+                    }
+                    ses.build.Backgroundify();
+                    Collider2D[] array = Physics2D.OverlapCircleAll(ses.transform.position, 2f);
+                    for (int i = 0; i < array.Length; i++) {
+                        if (array[i].TryGetComponent<BuildingEntity>(out var component) && component.id == "reinforceddoor") {
+                            component.Backgroundify();
+                        }
                     }
                 }
 
+                ServerMain.Server_AnnounceSound(si.go.transform.position, "beep", ServerMain.GetListOfClientIdsExceptThis(clientId));
+                return;
             }
-
-            ServerMain.Server_AnnounceSound(si.go.transform.position, "beep", ServerMain.GetListOfClientIdsExceptThis(clientId));
-
-
-            return;
-        }
 #if DEBUG
-        Plugin.log.LogWarning($" Server_ScrapEaterScriptUse DENIED !!!!!!!!!!!!!!!!!!!!!!  {user}  ses:{ses}  si: {si} ");
+            Plugin.log.LogWarning($" Server_ScrapEaterScriptUse DENIED !!!!!!!!!!!!!!!!!!!!!!  {user}  ses:{ses}  si: {si} ");
 #endif
+        } finally {
+            UseAck.Send(clientId, bioterminal_syncid);
+            if (scrapSyncId.id != 0) {
+                UseAck.Send(clientId, scrapSyncId);
+            }
+        }
     }
-
 
 }
 

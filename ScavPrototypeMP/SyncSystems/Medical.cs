@@ -3041,22 +3041,21 @@ internal class MedicalSync : CasualtiesTogetherSingleton {
             ItemSync.TryGetItemSyncInfo(item_syncid, out var isi)
         ) {
 
-#if !RELEASE // these are for verbose output why shit gets denied
-            // all of this gets checked in the DoApplyWoundItemChecks
-            if (healer_nb != target_nb) {
-                if (!KM.DistanceCheck(healer.body, target_nb.body, SharedMain.max_player_interaction_distance * 1.3f)) {
-                    Plugin.log.LogWarning($"Server receives: PlayerCamera.ApplyWoundItem FAILED: TOO FAR {healer} -> {targetlimb} {isi}  ");
-                    return;
-                }
-                if (!Util.AccurateRaycastInteractionCheckObstruction(healer.body, target_nb.body, false)) {
-                    Plugin.log.LogWarning($"Server receives: PlayerCamera.ApplyWoundItem FAILED: OBSTRUCTED {healer} -> {targetlimb} {isi}  ");
-                    return;
-                }
+            // 对齐 Server_CheckCanHealerUseItemForLimb 的交互容差半径（9f * 2.5f = 22.5f，对应 PR #60/#58）：
+            // 消除 20~22.5 距离区间（及原 Debug 11.7f 窄阈值）下客机本地可正常打开医疗/义肢修补小游戏，但服务端拒收开启包导致修补回滚的不一致。
+            float maxInteractDist = SharedMain.max_player_interaction_distance * 2.5f;
+            if (healer_nb != target_nb && !KM.DistanceCheck(healer.body, target_nb.body, maxInteractDist)) {
+                Plugin.log.LogWarning($"Server receives: PlayerCamera.ApplyWoundItem FAILED: TOO FAR {healer} -> {targetlimb} {isi}  ");
+                return;
             }
-#endif 
+#if !RELEASE
+            if (healer_nb != target_nb && !Util.AccurateRaycastInteractionCheckObstruction(healer.body, target_nb.body, false)) {
+                Plugin.log.LogWarning($"Server receives: PlayerCamera.ApplyWoundItem FAILED: OBSTRUCTED {healer} -> {targetlimb} {isi}  ");
+                return;
+            }
+#endif
 
-            // but this is needed here
-            if (!ItemSync.CheckIfBodyReachThisItem(isi, healer.body, 20f, true)) {
+            if (!ItemSync.CheckIfBodyReachThisItem(isi, healer.body, maxInteractDist, true)) {
                 Plugin.log.LogWarning($"Server receives: PlayerCamera.ApplyWoundItem FAILED: CANT REACH {healer} -> {targetlimb} si:{isi}  ");
                 return;
             }

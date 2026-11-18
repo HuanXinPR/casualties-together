@@ -516,6 +516,7 @@ namespace Together {
                 }
 
                 IsRunning = false;
+                UnicodeFontFallback.ResetClientSyncState();
                 SERVER_MESSAGE_HANDLERS.Clear();
                 CLIENT_MESSAGE_HANDLERS.Clear();
 
@@ -664,7 +665,7 @@ namespace Together {
             if (Net.Type == NetType.Host && ScavPlayer.LocalPlayer == null) {
 
                 ulong steamId = 0;
-                string aplayername = KSteam.SessionName();
+                string aplayername = Multiplayer.PLAYER_USERNAME;
                 if (Net.TryGetSteamTransport(out TransportSteamworks tsteam)) {
                     steamId = KSteam.GetLocalUserSteamID().m_SteamID;
                 }
@@ -711,94 +712,103 @@ namespace Together {
         }
 
 
-        // for LiteNetLib i dont need to resolve domains
+        /// <summary>
+        /// 解析直连输入的主机地址（IPv4 / IPv6 / 多级域名 / 单标签主机名如 <c>localhost</c>）与可选端口（修复上游 Issue #2）。
+        /// <para>
+        /// - 空串或全空白直接保持默认 <c>127.0.0.1:7790</c> 返回 <see langword="true"/>；<br/>
+        /// - 优先识别 <c>[ipv6]:port</c> 与 <c>[ipv6]</c>；<br/>
+        /// - 无方括号时按冒号个数消歧：<c>&gt;= 2</c> 视为无端口纯 IPv6，<c>== 1</c> 一律按 <c>host:port</c> 拆分（修复 <c>localhost:7791</c> 因无点号被误判为 IPv6 的缺陷）。
+        /// </para>
+        /// </summary>
         public static bool TryParseIPPORT(string IPPORT, out string ip, out ushort port) {
             ip = IP_LOCALHOST_IPv4;
             port = DEFAULT_PORT;
-            bool is_ipv4 = true; // if false its ipv6
 
+            if (string.IsNullOrWhiteSpace(IPPORT)) {
+                return true;
+            }
 
-            // example input_ipport_text that this should support:
-            // 127.0.0.1:7777
-            // somedomain.com:7777
-            // 127.0.0.1        //port should be optional
-            // somedomain.com
-            // ::   // and now it supports ipv6
-            // [2001:db8:4006:812::200e]:7790
-            // [2001:db8:4006:812::200e]
-            // 2001:db8:4006:812::200e
-            // ::ffff:192.0.2.128
-            // [::ffff:192.0.2.128]:7790
+            string trimmed = IPPORT.Trim();
+            try {
+                if (trimmed.StartsWith("[", StringComparison.Ordinal)) {
+                    int closeBracket = trimmed.IndexOf(']');
+                    if (closeBracket <= 1) {
+                        return false;
+                    }
 
-            IPPORT = IPPORT.Trim();
-            string split1 = IPPORT;
-            string split2 = "";
+                    string ipv6Host = trimmed.Substring(1, closeBracket - 1).Trim();
+                    if (string.IsNullOrEmpty(ipv6Host) || ContainsWhitespace(ipv6Host)) {
+                        return false;
+                    }
 
-            if (!String.IsNullOrEmpty(IPPORT)) {
-                try {
-                    // https://en.wikipedia.org/wiki/IPv6
-
-                    int indexof_sqbracketend = IPPORT.IndexOf(']');
-                    int lastcolon = IPPORT.LastIndexOf(':');
-                    if (IPPORT.StartsWith('[') && indexof_sqbracketend != -1) { // guaranteed ipv6 like "[2001:db8:4006:812::200e]:8080" or  "[2001:db8:4006:812::200e]"
-
-                        split1 = IPPORT.Substring(1, indexof_sqbracketend - 1);
-                        if (lastcolon > indexof_sqbracketend) { // try to find the ":8080" part of ip address
-                            split2 = IPPORT.Substring(lastcolon + 1);
+                    string remainder = trimmed.Substring(closeBracket + 1).Trim();
+                    if (remainder.Length > 0) {
+                        if (!remainder.StartsWith(":", StringComparison.Ordinal)) {
+                            return false;
                         }
-
-                    } else {
-                        {
-                            int firstdot = IPPORT.IndexOf('.');
-                            int firstcolon = IPPORT.IndexOf(':');
-                            if (firstcolon == -1) { // so its ipv4 without port aka "127.0.0.1" or a domain like "example.com"
-                                is_ipv4 = true;
-                            } else {
-                                if (firstdot == -1) { // guaranteed not ipv4 cuz theres no dots in "2001:db8:4006:812::200e"
-                                    is_ipv4 = false;
-                                } else {
-                                    if (firstdot < firstcolon) { // very likely basicass ipv4 like "127.0.0.1:7790" or a domain like "example.com:7790"
-                                        is_ipv4 = true;
-                                    } else { // apparently theres ipv4 compatibility bullshit? like "::ffff:192.0.2.128"
-                                        is_ipv4 = false;
-                                        if (lastcolon > firstdot) {// probably port is possible???? as if "::ffff:192.0.2.128:7777" but nah ppl should use the square brackets for ts
-                                            //split2 = input_ipport_text.Substring(lastcolon + 1);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if (is_ipv4) {
-                            if (lastcolon != -1) {
-                                split1 = IPPORT.Substring(0, lastcolon);
-                                split2 = IPPORT.Substring(lastcolon + 1);
-                            }
-                        } else {
-                            split1 = IPPORT;
+                        string portText = remainder.Substring(1).Trim();
+                        if (string.IsNullOrEmpty(portText) || !ushort.TryParse(portText, out port)) {
+                            return false;
                         }
                     }
 
+                    ip = ipv6Host;
+                    return true;
+                }
 
-                } catch (Exception e) {
-                    log.error("IPv4 or IPv6 parse: " + e.Message);
-
+                if (trimmed.IndexOf('[') >= 0 || trimmed.IndexOf(']') >= 0) {
                     return false;
                 }
-            }
-            split1 = split1.Trim();
-            split2 = split2.Trim();
 
-            ip = split1;
-            port = DEFAULT_PORT;
-            if (!String.IsNullOrEmpty(split2)) {
-                if (!ushort.TryParse(split2.Trim(), out port)) {
+                int colonCount = 0;
+                int singleColonIndex = -1;
+                for (int i = 0; i < trimmed.Length; i++) {
+                    if (trimmed[i] == ':') {
+                        colonCount++;
+                        singleColonIndex = i;
+                    }
+                }
+
+                if (colonCount >= 2) {
+                    // 无方括号且含 >= 2 个冒号：无端口纯 IPv6 字面量（如 ::1 或 fe80::1）
+                    if (ContainsWhitespace(trimmed)) {
+                        return false;
+                    }
+                    ip = trimmed;
+                    return true;
+                }
+
+                if (colonCount == 1) {
+                    string hostPart = trimmed.Substring(0, singleColonIndex).Trim();
+                    string portPart = trimmed.Substring(singleColonIndex + 1).Trim();
+                    if (string.IsNullOrEmpty(hostPart) || ContainsWhitespace(hostPart) || string.IsNullOrEmpty(portPart)) {
+                        return false;
+                    }
+                    if (!ushort.TryParse(portPart, out port)) {
+                        return false;
+                    }
+                    ip = hostPart;
+                    return true;
+                }
+
+                if (ContainsWhitespace(trimmed)) {
                     return false;
                 }
+                ip = trimmed;
+                return true;
+            } catch (Exception e) {
+                log.error("TryParseIPPORT: " + e.Message);
+                return false;
             }
+        }
 
-
-            return true;
+        private static bool ContainsWhitespace(string value) {
+            for (int i = 0; i < value.Length; i++) {
+                if (char.IsWhiteSpace(value[i])) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         public static bool VerifyMyServerName() {
@@ -806,10 +816,14 @@ namespace Together {
                 return false;
             }
             string n = MyServerInfo.name;
-            if (n.Length < 3) {
+            if (string.IsNullOrEmpty(n)) {
                 return false;
             }
-            if (n.Length > Net.MAX_SERVER_NAME_LENGTH || Multiplayer.SanitizeTextInputAllowSpaces(n) != n) {
+            int minLen = Multiplayer.ContainsNonAscii(n) ? 1 : 3;
+            if (n.Length < minLen) {
+                return false;
+            }
+            if (n.Length > Net.MAX_SERVER_NAME_LENGTH || Multiplayer.SanitizeUnicodeTextInputAllowSpaces(n, Net.MAX_SERVER_NAME_LENGTH) != n) {
                 return false;
             }
 
@@ -1001,12 +1015,8 @@ namespace Together {
 
         static bool _DoOnWantToConnect(string ipport_input, Net.NetType type) {
             try {
-                if (UIMainMenu.USERINPUT_NAME.Length < 3) {
-                    Multiplayer.DoMultiplayerStatusMessageLog("Name too short.");
-                    return false;
-                }
-                if (UIMainMenu.USERINPUT_NAME != Multiplayer.SanitizeTextInput(UIMainMenu.USERINPUT_NAME)) {
-                    Multiplayer.DoMultiplayerStatusMessageLog("Invalid Name.");
+                if (!Multiplayer.IsValidPlayerName(UIMainMenu.USERINPUT_NAME, out string nameError)) {
+                    Multiplayer.DoMultiplayerStatusMessageLog(nameError);
                     return false;
                 }
                 if (!Net.TryParseIPPORT(ipport_input, out string ip, out ushort port)) {
@@ -1017,50 +1027,51 @@ namespace Together {
                     if (!NsfwContentFilter.LastCreateWasRejected) {
                         Multiplayer.DoMultiplayerStatusMessageLog("Invalid Server name.");
                     }
-
                     return false;
                 }
-
 
                 Net.TransportCreated(type);
                 TransportLiteNetLib transport = new TransportLiteNetLib(ip, port);
                 Net.Transport = transport;
 
                 if (type == Net.NetType.Client) {
-
                     NetDataWriter hellopacket = Multiplayer.GetClientConnectIntroductionPacket();
 
                     bool success = transport.NetManager.Start();
                     if (!success) {
-                        Multiplayer.DoMultiplayerStatusMessageLog("LiteNetLib: CLIENT: NetManager.Start() failed.");
+                        Net.ShutdownReset();
+                        Multiplayer.DoMultiplayerStatusMessageError("LiteNetLib: CLIENT: NetManager.Start() failed.");
                         return false;
                     }
 
+                    // 校验 NetManager.Connect 返回值：当 DNS 解析失败或端点不可达返回 null 时，立即重置连接状态并提示玩家，避免卡死在假连接态（Issue #2）
                     transport.CLIENT_PEER = transport.NetManager.Connect(ip, port, hellopacket);
+                    if (transport.CLIENT_PEER == null) {
+                        Net.ShutdownReset();
+                        Multiplayer.DoMultiplayerStatusMessageError($"LiteNetLib: Failed to resolve or connect to \"{ip}:{port}\".");
+                        return false;
+                    }
 
                     return true;
-                } else {
-                    if (type == Net.NetType.Host || type == Net.NetType.DedicatedServer) {
-
-                        bool success = transport.NetManager.Start(port);
-                        if (!success) {
-                            Multiplayer.DoMultiplayerStatusMessageLog("LiteNetLib: SERVER: NetManager.Start() failed.");
-                            return false;
-                        }
-
-                        Net.OnTransportConnected();
-
-                        return true;
-                    } else {
-                        throw new NotImplementedException();
-                    }
                 }
 
+                if (type == Net.NetType.Host || type == Net.NetType.DedicatedServer) {
+                    bool success = transport.NetManager.Start(port);
+                    if (!success) {
+                        Net.ShutdownReset();
+                        Multiplayer.DoMultiplayerStatusMessageError("LiteNetLib: SERVER: NetManager.Start() failed.");
+                        return false;
+                    }
 
-                Multiplayer.DoMultiplayerStatusMessageError("TransportLiteNetLib.OnWantToConnect: What the fuck?");
+                    Net.OnTransportConnected();
+                    return true;
+                }
 
+                throw new NotImplementedException();
             } catch (Exception e) {
-                Multiplayer.DoMultiplayerStatusMessageError("TransportLiteNetLib.OnWantToConnect:\n" + e.ToString());
+                Net.ShutdownReset();
+                Multiplayer.DoMultiplayerStatusMessageError("TransportLiteNetLib.OnWantToConnect:\n" + e.Message);
+                log.error(e);
             }
             return false;
         }

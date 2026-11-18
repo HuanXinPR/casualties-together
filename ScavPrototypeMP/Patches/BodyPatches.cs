@@ -272,8 +272,12 @@ namespace Together {
             }
 
             if (Util.IsBodyLocal(body)) {
-                // reenable flash brain for local player (cuz i overriden it with the patch)
-                if (body.consciousness > 20f && (double)UnityEngine.Random.value > (double)body.brainHealth * 0.01 && !PlayerCamera.main.lastStandPanel.activeSelf) {
+                // 对齐原版 Body.HandlePeriodicChecks 外层 WorldGeneration.GetRunSettingBool("braindamagefx") 门控（Issue #29），
+                // 防止关闭脑损伤视觉特效（脑叶切除开关）的局内仍强制触发本地相机脑损闪屏。
+                if (body.consciousness > 20f
+                    && (double)UnityEngine.Random.value > (double)body.brainHealth * 0.01
+                    && WorldGeneration.GetRunSettingBool("braindamagefx")
+                    && !PlayerCamera.main.lastStandPanel.activeSelf) {
                     if (!UIInGame.SpectatorModeActive) {
                         PlayerCamera.main.ForceFlashBrain();
                     }

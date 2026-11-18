@@ -725,13 +725,10 @@ public static class Body_Update_MultiplayerPatch {
                 }
 
                 {
-                    // do radiation visuals
-
+                    // Issue #8: 原版 Body.Update() 自身已按 standingOn.toxicity 累加过一次 radiationSickness（且由服务端权威同步）；
+                    // 此处仅驱动客户端相机辐射噪点视觉效果，移除重复累加消除双倍辐射速率回归 Bug。
                     var standingOn = body.standingOn;
-
-                    //OG: Body.Update V5t4   im checking if its actually the local body doing this
                     if (body.grounded && standingOn != null && standingOn.toxicity > 0f) {
-                        body.radiationSickness += standingOn.toxicity * Time.deltaTime;
                         PlayerCamera_SetIrradiateIntensity_MultiplayerPatch.RealSetIrradiateIntensity(npc, standingOn.toxicity * 0.25f);
                     }
                 }

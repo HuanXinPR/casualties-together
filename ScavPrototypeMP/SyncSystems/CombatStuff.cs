@@ -2,6 +2,7 @@ using CasualtiesTogetherUtils;
 using HarmonyLib;
 using KrokV5Optimization;
 using LiteNetLib;
+using LiteNetLib.Utils;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -16,53 +17,59 @@ using Random = UnityEngine.Random;
 
 namespace Together;
 
-
-
-// is this thing obsolete?
-// this is guranteed to run only from PlayerCamera.Update
-[HarmonyPatch(typeof(Body), nameof(Body.UseItemInHand))]
-public static class Body_UseItemInHand_MultiplayerPatch {
-
-    public static bool IsUsingItemInHand = false;
-
-    private static bool _hostLight;
-    private static ushort _hostLightId;
+/// <summary>
+/// 手持消耗品与手电筒开关的客户端预测锁及服务端使用确认（<c>UseAck</c>）同步协调器（独立于 <see cref="HarmonyPatch"/> 类以避免分析器误判）。
+/// </summary>
+internal static class CombatItemUseSync {
+    private const float LegacyHoldDurationSeconds = 2f;
+    private const float AckHoldMaxDurationSeconds = 7.5f;
+    private const float AckTailHoldDurationSeconds = 0.35f;
 
     private struct StateHold {
         public byte state;
         public float until;
     }
 
-    struct PendingUse {
-        public bool on;
-        public ushort item;
-        public knetid body;
-    }
+    private static readonly Dictionary<ushort, StateHold> StateHolds = new Dictionary<ushort, StateHold>();
 
-    static PendingUse _pending;
-    static readonly Dictionary<ushort, StateHold> StateHolds = new Dictionary<ushort, StateHold>();
-
-    // true while this byte is older than the click. the hold stays up for the whole wait,
-    // so a matching byte does not let an older one through afterwards.
     internal static bool StaleState(ushort id, byte incoming) {
-        byte held;
-        if (!HeldState(id, out held)) {
+        if (!HeldState(id, out byte held)) {
             return false;
         }
         return incoming != held;
     }
 
     internal static void HoldState(ushort id, byte state) {
+        // 支持 UseAck 的新版房主下延长至 7.5s 并在收到 use_ack 时收敛为 0.35s；连旧版 v5.5.3.0 房主时保持原 2s 短窗口
+        HoldState(id, state, UseAck.ServerSupportsUseAck ? AckHoldMaxDurationSeconds : LegacyHoldDurationSeconds);
+    }
+
+    internal static void HoldState(ushort id, byte state, float durationSeconds) {
         if (id == 0) {
             return;
         }
-        StateHolds[id] = new StateHold { state = state, until = Time.realtimeSinceStartup + 2f };
+        StateHolds[id] = new StateHold { state = state, until = Time.realtimeSinceStartup + durationSeconds };
+    }
+
+    internal static void OnServerAck(ushort id) {
+        if (id == 0 || !StateHolds.TryGetValue(id, out StateHold hold)) {
+            return;
+        }
+        float now = Time.realtimeSinceStartup;
+        if (now >= hold.until) {
+            StateHolds.Remove(id);
+            return;
+        }
+        float tailUntil = now + AckTailHoldDurationSeconds;
+        if (tailUntil < hold.until) {
+            hold.until = tailUntil;
+            StateHolds[id] = hold;
+        }
     }
 
     internal static bool HeldState(ushort id, out byte state) {
         state = 0;
-        StateHold hold;
-        if (!StateHolds.TryGetValue(id, out hold)) {
+        if (!StateHolds.TryGetValue(id, out StateHold hold)) {
             return false;
         }
         if (Time.realtimeSinceStartup >= hold.until) {
@@ -73,101 +80,251 @@ public static class Body_UseItemInHand_MultiplayerPatch {
         return true;
     }
 
-    // empty charge / condition won. drop the predicted ON so ApplyData can keep state 0.
     internal static void ClearHeldState(ushort id) {
-        if (id == 0)
-            return;
-        StateHolds.Remove(id);
+        if (id != 0) {
+            StateHolds.Remove(id);
+        }
     }
 
-    // the click already ran. tell the host, and hold this copy until that round trip lands.
+    internal static void ClearAllHeldStates() {
+        StateHolds.Clear();
+    }
+
     internal static void AnnouncePredictedUse(ushort itemId, knetid bodyNet) {
-        if (Net.IsServer || (itemId == 0)) {
+        if (Net.IsServer || itemId == 0) {
             return;
         }
-        if (ItemSync.TryGetItemSyncInfo((knetid)itemId, out SyncInfo si) && (si is not null)) {
+        if (ItemSync.TryGetItemSyncInfo((knetid)itemId, out SyncInfo si) && si is not null) {
             si.ArmPredictedUse();
-            if ((si.item is not null) && si.item.TryGetComponent(out CustomItemBehaviour cib) && ItemSync.CustomItemBehaviourStateCanBeJustByte(si.item)) {
+            if (si.item is not null && si.item.TryGetComponent(out CustomItemBehaviour cib) && ItemSync.CustomItemBehaviourStateCanBeJustByte(si.item)) {
                 HoldState(itemId, (byte)cib.state);
             }
         }
         Multiplayer.Client_SendSimpleMessageToServer((byte)NetmsgId.SERVER_RequestUseItem, (knetid)itemId, bodyNet, true);
     }
 
+    internal static void SendLightMode(SyncInfo si, NetBody nb) {
+        if (si is null || si.item is null || nb == null || !si.item.TryGetComponent(out CustomItemBehaviour light)) {
+            return;
+        }
+        knetid user = nb.plr != null ? nb.plr.playerId : default;
+        NetDataWriter writer = Net.CreateWriter(NetmsgId.CLIENT_RequestUseItemRelay);
+        writer.Put(user);
+        writer.Put(si.syncId);
+        writer.Put(nb.netId);
+        writer.Put((byte)light.state);
+        Net.Server_SendToClients(DeliveryMethod.ReliableUnordered, writer, clientIds: ServerMain.GetListOfClientIdsExceptThisAndHost(user));
+    }
+
+    [ServerReceiver((byte)NetmsgId.SERVER_RequestUseItem)]
+    static void Server_RequestUseItem(knetid clientId, NetDataReader reader) {
+        reader.Get(out knetid item);
+        reader.Get(out knetid targetPerson);
+
+        if (!ScavPlayer.TryGetPlayerAndNetBodyFromClientId(clientId, out var giverPlr, out var giver)
+            || giver?.body == null
+            || !giver.body.conscious
+            || !NetBody.TryGetNetBodyFromId(targetPerson, out var targetNb)
+            || !NetObjectRegistry.TryGetSyncInfo(item, out var si)
+            || si.go == null
+            || !si.IsItem()) {
+            UseAck.Send(clientId, item);
+            return;
+        }
+
+        bool allowed = (giver == targetNb || !MedicalSync.IsRefusingHelp(targetNb.body))
+            && KM.DistanceCheck(giver, targetNb.body, SharedMain.max_player_interaction_distance * 1.6f)
+            && (si.item.Stats.usable || si.item.Stats.wearable)
+            && ItemSync.CheckIfBodyReachThisItem(si, giver.body)
+            && !CombatStuff.ItemIsUsedForAttacking(si.item)
+            && (si.item.Stats.wearable || !ItemSync.TooSpentToUse(si.item));
+
+        if (!allowed) {
+            log.serverdeny($"RequestUseItem {giverPlr} -> {targetNb} - {si}", Vector2.Lerp(giverPlr.body.transform.position, targetNb.position, 0.5f));
+            UseAck.Send(clientId, item);
+            return;
+        }
+
+        void ExecuteUseItem() {
+            if (!(giver == targetNb && giver.IsLocal)) {
+                ItemSync.BetterUseItem(targetNb.body, si.item);
+            }
+
+            if (DebugHelp._DEV_VISUALISE_NET_EVENTS) {
+                DebugHelp.OnNetEvent(Vector2.Lerp(giver.position, targetNb.position, 0.5f), $"S: RequestUseItem {si}");
+            }
+
+            byte lightState = 255;
+            if (si.go is not null && si.item is not null && si.item.TryGetComponent(out CustomItemBehaviour light) && ItemSync.CustomItemBehaviourStateCanBeJustByte(si.item)) {
+                lightState = (byte)light.state;
+            }
+
+            var writer = Net.CreateWriter(NetmsgId.CLIENT_RequestUseItemRelay);
+            writer.Put(clientId);
+            writer.Put(item);
+            writer.Put(targetPerson);
+            writer.Put(lightState);
+            Net.Server_SendToClients(DeliveryMethod.ReliableUnordered, writer, clientIds: ServerMain.GetListOfClientIdsExceptThisAndHost(clientId));
+        }
+
+        if (Multiplayer.rules.ConsentForFeeding && targetNb != giver && targetNb.body.conscious && targetNb.IsPlayer) {
+            string actionKey = si.item.Stats.wearable
+                ? "plrint_feed_receive_wearable"
+                : (si.item.IsEdible()
+                    ? "plrint_feed_receive_food"
+                    : (si.item.Stats.category == "water" ? "plrint_feed_receive_water" : "plrint_useitem"));
+
+            // ConsentForFeeding 为异步弹窗：严禁在弹出瞬间提前发 use_ack（否则物品会在等待对方确认期间被旧快照回滚），必须在玩家应答落定后再发
+            ServerMain.PromptPlayer(
+                targetNb.plr,
+                "FEED_OFFER",
+                $"<body:{giver.netId}> <key:plrint_feed_prompt>",
+                $"<key:{actionKey}> \"<item:{si.syncId}>\"",
+                answer => {
+                    try {
+                        if (answer == 0) {
+                            if (si.go == null) {
+                                giverPlr.Server_DoAlertSingle($"<bodyc:{targetNb.netId}> <key:giveitem_noitem>.");
+                                return;
+                            }
+                            if (ItemSync.ConfirmItemOffer(giver, targetNb, si.item)) {
+                                ExecuteUseItem();
+                                giverPlr.Server_DoAlertSingle($"<bodyc:{targetNb.netId}> <key:accepted>.");
+                            }
+                        } else {
+                            giverPlr.Server_DoAlertSingle($"<bodyc:{targetNb.netId}> <key:declined>.");
+                        }
+                    } finally {
+                        UseAck.Send(clientId, item);
+                    }
+                });
+        } else {
+            try {
+                ExecuteUseItem();
+            } finally {
+                UseAck.Send(clientId, item);
+            }
+        }
+    }
+
+    [ClientReceiver((byte)NetmsgId.CLIENT_RequestUseItemRelay)]
+    static void Client_RequestUseItemRelay(knetid _, NetDataReader reader) {
+        reader.Get(out knetid _);
+        reader.Get(out knetid item);
+        reader.Get(out knetid target);
+
+        byte lightState = 255;
+        if (!reader.EndOfData) {
+            reader.Get(out lightState);
+        }
+
+        if (!NetBody.TryGetNetBodyFromId(target, out var targetNb) || !NetObjectRegistry.TryGetSyncInfo(item, out var si) || si.go == null) {
+            return;
+        }
+
+        if (DebugHelp._DEV_VISUALISE_NET_EVENTS && ScavPlayer.LocalPlayer?.body != null) {
+            DebugHelp.OnNetEvent(Vector2.Lerp(ScavPlayer.LocalPlayer.body.transform.position, targetNb.position, 0.8f), $"C: RequestUseItemRelay {si}");
+        }
+
+        if (lightState != 255 && si.item is not null && si.item.TryGetComponent(out CustomItemBehaviour light)) {
+            light.state = lightState;
+            // 旁观客机不会收到单播给发起者的 use_ack，此处固定使用 2s 短缓冲屏蔽在途旧快照即可
+            HoldState(si.syncId, lightState, LegacyHoldDurationSeconds);
+            Sound.Play("flashlighttoggle", si.item.transform.position);
+        } else {
+            ItemSync.BetterUseItem(targetNb.body, si.item);
+        }
+    }
+}
+
+[HarmonyPatch(typeof(Body), nameof(Body.UseItemInHand))]
+public static class Body_UseItemInHand_MultiplayerPatch {
+    public static bool IsUsingItemInHand = false;
+
+    private static bool _hostLight;
+    private static ushort _hostLightId;
+
+    private struct PendingUse {
+        public bool on;
+        public ushort item;
+        public knetid body;
+    }
+
+    private static PendingUse _pending;
+
+    internal static bool StaleState(ushort id, byte incoming) => CombatItemUseSync.StaleState(id, incoming);
+    internal static void HoldState(ushort id, byte state) => CombatItemUseSync.HoldState(id, state);
+    internal static bool HeldState(ushort id, out byte state) => CombatItemUseSync.HeldState(id, out state);
+    internal static void ClearHeldState(ushort id) => CombatItemUseSync.ClearHeldState(id);
+    internal static void AnnouncePredictedUse(ushort itemId, knetid bodyNet) => CombatItemUseSync.AnnouncePredictedUse(itemId, bodyNet);
+
     public static bool Prefix(Body __instance) {
         _hostLight = false;
-        if (!Util.IsWorldGenerated()) { return false; }
+        if (!Util.IsWorldGenerated()) {
+            return false;
+        }
+        if (!Net.IsRunning) {
+            return true;
+        }
 
-        if (!Net.IsRunning) return true;
-
-        var body = __instance;
         _pending.on = false;
-
-        if (Util.IsBodyLocal(body)) { // its local 
-
-            //OG: Body.UseItemInHand
-            if (body.conscious && body.GetItem(body.handSlot) is var item && item != null && item.Stats != null && item.Stats.usable && item.Stats.usableWithLMB) {
-                // spent destroyAtZero food stays in the slot until the host frees the id.
-                // stock useAction does not check condition, so a second click would Eat again.
+        if (Util.IsBodyLocal(__instance)) {
+            if (__instance.conscious
+                && __instance.GetItem(__instance.handSlot) is var item
+                && item != null
+                && item.Stats != null
+                && item.Stats.usable
+                && item.Stats.usableWithLMB) {
                 if (ItemSync.TooSpentToUse(item)) {
                     return false;
                 }
-                // guns still skip the next health snapshot. their shots already go out on their own.
-                if (CombatStuff.ItemIsUsedForAttacking(item) && NetObjectRegistry.TryGetSyncInfoOrRegister(item.gameObject, out var si))
+                if (CombatStuff.ItemIsUsedForAttacking(item) && NetObjectRegistry.TryGetSyncInfoOrRegister(item.gameObject, out var si)) {
                     si.SetIgnoreTimeForRoundTrip();
-                else if (!Net.IsServer && !CombatStuff.ItemIsUsedForAttacking(item)
-                    && body.TryGetNetBody(out var nb) && nb.IsLocal
+                } else if (!Net.IsServer
+                    && !CombatStuff.ItemIsUsedForAttacking(item)
+                    && __instance.TryGetNetBody(out var nb)
+                    && nb.IsLocal
                     && ItemSync.TryGetSyncInfo(item, out var useSi)) {
-                    // run the use here. the host confirms the same click after.
                     _pending.on = true;
                     _pending.item = useSi.syncId;
                     _pending.body = nb.netId;
                 } else if (Net.IsServer && ItemSync.CustomItemBehaviourStateCanBeJustByte(item) && ItemSync.TryGetSyncInfo(item, out SyncInfo lightSi)) {
-                    // the host click never takes the request path. other clients still need the mode it landed on.
                     _hostLight = true;
                     _hostLightId = lightSi.syncId;
                 }
             }
-
             IsUsingItemInHand = true;
         }
-
         return true;
     }
+
     public static void Postfix(Body __instance) {
-        if (!Net.IsRunning) return;
+        if (!Net.IsRunning) {
+            return;
+        }
 
         if (_pending.on) {
-            AnnouncePredictedUse(_pending.item, _pending.body);
+            CombatItemUseSync.AnnouncePredictedUse(_pending.item, _pending.body);
             _pending.on = false;
         }
         if (_hostLight) {
             _hostLight = false;
-            SyncInfo lightSi;
-            NetBody nb;
-            if (ItemSync.TryGetItemSyncInfo((knetid)_hostLightId, out lightSi) && __instance.TryGetNetBody(out nb)) {
-                Body_UseItem_MultiplayerPatch.SendLightMode(lightSi, nb);
+            if (ItemSync.TryGetItemSyncInfo((knetid)_hostLightId, out SyncInfo lightSi) && __instance.TryGetNetBody(out NetBody nb)) {
+                CombatItemUseSync.SendLightMode(lightSi, nb);
             }
         }
 
-        var body = __instance;
-
-        if (Net.IsServer) // is host or server
-        {
-        } else if (Util.GetLocalBody() == body) { // its local 
+        if (!Net.IsServer && Util.GetLocalBody() == __instance) {
             IsUsingItemInHand = false;
         }
-
     }
 }
-
-
-
-
 
 [HarmonyPatch(typeof(Body), nameof(Body.UseItem))]
 public static class Body_UseItem_MultiplayerPatch {
     public static Item current_used_item = null;
+
+    internal static void SendLightMode(SyncInfo si, NetBody nb) => CombatItemUseSync.SendLightMode(si, nb);
 
     public static bool Prefix(Body __instance, ref SyncInfo __state, Item item) {
         current_used_item = item;
@@ -183,161 +340,33 @@ public static class Body_UseItem_MultiplayerPatch {
             return false;
         }
 
-        if (item && __instance.TryGetNetBody(out var pb) && pb.IsLocal) { // check if its local
+        if (item && __instance.TryGetNetBody(out var pb) && pb.IsLocal) {
             if (ItemSync.TryGetSyncInfo(item, out var si)) {
                 if (item.Stats.usable) {
-                    if (CombatStuff.ItemIsUsedForAttacking(item)) { // weapons are handled separately by the attack and gun shoot but whatever
+                    if (CombatStuff.ItemIsUsedForAttacking(item)) {
                         if (si.IsGun()) {
                             var gst = item.GetOrAddComponent<TrackerGunScript>();
                             gst.body = __instance;
                             gst.pbody = pb;
                         }
-                        // attack items commands are sent from the attack functions
                     } else {
                         __state = si;
-
                         pb.RollUseRandom();
                     }
                 }
             } else {
-                // it will check if the item is ignored for network
                 NetObjectRegistry.Client_DeleteUnregisteredSyncableObject(item.gameObject);
             }
         }
-
         return true;
     }
-    public static void Postfix(Body __instance, ref SyncInfo __state, Item item) {
+
+    public static void Postfix(Body __instance, ref SyncInfo __state) {
         current_used_item = null;
-        if (__state != null) { // if is registered item and not an attack item 
-
-            // same click the hand path uses. local use already happened.
-            Body_UseItemInHand_MultiplayerPatch.AnnouncePredictedUse(__state.syncId, __instance.GetNetBody().netId);
-
+        if (__state != null && __instance.TryGetNetBody(out var nb)) {
+            CombatItemUseSync.AnnouncePredictedUse(__state.syncId, nb.netId);
         }
     }
-
-
-    [ServerReceiver((byte)NetmsgId.SERVER_RequestUseItem)]
-    static void Server_RequestUseItem(knetid clientId, LiteNetLib.Utils.NetDataReader reader) {
-
-        reader.Get(out knetid item);
-        reader.Get(out knetid target_person);
-
-        if (
-            ScavPlayer.TryGetPlayerAndNetBodyFromClientId(clientId, out var giverPlr, out var giver) && giver.body.conscious
-            && NetBody.TryGetNetBodyFromId(target_person, out var target_nb)
-            && NetObjectRegistry.TryGetSyncInfo(item, out var si) && si.go != null && si.IsItem()
-        ) {
-
-            if (
-                (giver == target_nb || !MedicalSync.IsRefusingHelp(target_nb.body))
-                && KM.DistanceCheck(giver, target_nb.body, SharedMain.max_player_interaction_distance * 1.6f)
-                && (si.item.Stats.usable || si.item.Stats.wearable)
-                && ItemSync.CheckIfBodyReachThisItem(si, giver.body)
-                && !CombatStuff.ItemIsUsedForAttacking(si.item)
-                // queued use requests can arrive after a one-bite food already hit 0.
-                && (si.item.Stats.wearable || !ItemSync.TooSpentToUse(si.item))
-            ) {
-                var useItemFunc = () => {
-                    if (giver == target_nb && giver.IsLocal) {
-                        // don't do it
-                    } else {
-                        ItemSync.BetterUseItem(target_nb.body, si.item);
-                    }
-
-                    if (DebugHelp._DEV_VISUALISE_NET_EVENTS) DebugHelp.OnNetEvent(Vector2.Lerp(giver.position, target_nb.position, 0.5f), $"S: RequestUseItem {si}");
-
-                    byte lightState = 255;
-                    if ((si.go is not null) && (si.item is not null) && si.item.TryGetComponent(out CustomItemBehaviour light) && ItemSync.CustomItemBehaviourStateCanBeJustByte(si.item)) {
-                        lightState = (byte)light.state;
-                    }
-
-                    var writer = Net.CreateWriter(NetmsgId.CLIENT_RequestUseItemRelay);
-                    writer.Put(clientId);
-                    writer.Put(item);
-                    writer.Put(target_person);
-                    writer.Put(lightState);
-                    Net.Server_SendToClients(DeliveryMethod.ReliableUnordered, writer, clientIds: ServerMain.GetListOfClientIdsExceptThisAndHost(clientId));
-                    // WRITER END;
-                };
-
-
-                if (Multiplayer.rules.ConsentForFeeding && target_nb != giver && target_nb.body.conscious && target_nb.IsPlayer) {
-                    ServerMain.PromptPlayer(target_nb.plr, "FEED_OFFER",
-                        $"<body:{giver.netId}> <key:plrint_feed_prompt>",
-                        $"<key:{(
-                                si.item.Stats.wearable ? "plrint_feed_receive_wearable" :
-                                (si.item.IsEdible() ? "plrint_feed_receive_food" :
-                                ((si.item.Stats.category == "water"
-                                ) ? "plrint_feed_receive_water"
-                                : "plrint_useitem"))
-                        )}> \"<item:{si.syncId}>\"",
-                    (answer) => {
-                        if (answer == 0) {
-                            if (si.go == null) {
-                                giverPlr.Server_DoAlertSingle($"<bodyc:{target_nb.netId}> <key:giveitem_noitem>.");
-                                return;
-                            }
-                            if (ItemSync.ConfirmItemOffer(giver, target_nb, si.item)) {
-                                useItemFunc();
-
-                                giverPlr.Server_DoAlertSingle($"<bodyc:{target_nb.netId}> <key:accepted>.");
-                            }
-                        } else {
-                            giverPlr.Server_DoAlertSingle($"<bodyc:{target_nb.netId}> <key:declined>.");
-                        }
-                    });
-                } else {
-                    useItemFunc();
-                }
-            } else { // at this point, real player should get an alert that they refuse
-                log.serverdeny($"RequestUseItem {giverPlr} -> {target_nb} - {si}", Vector2.Lerp(giverPlr.body.transform.position, target_nb.position, 0.5f));
-            }
-        }
-    }
-    [ClientReceiver((byte)NetmsgId.CLIENT_RequestUseItemRelay)]
-    static void Client_RequestUseItemRelay(knetid _, LiteNetLib.Utils.NetDataReader reader) {
-
-        reader.Get(out knetid user);
-        reader.Get(out knetid item);
-        reader.Get(out knetid target);
-        // 255 means this use is not a light. older hosts omit the byte.
-        byte lightState = 255;
-        if (!reader.EndOfData) {
-            reader.Get(out lightState);
-        }
-
-        if (
-            NetBody.TryGetNetBodyFromId(target, out var target_nb) &&
-            NetObjectRegistry.TryGetSyncInfo(item, out var si) && si.go != null
-        ) {
-            if (DebugHelp._DEV_VISUALISE_NET_EVENTS && ScavPlayer.LocalPlayer != null) DebugHelp.OnNetEvent(Vector2.Lerp(ScavPlayer.LocalPlayer.body.transform.position, target_nb.position, 0.8f), $"C: RequestUseItemRelay {si}");
-
-            // the relay used to run the toggle on its own. the snapshot still had the old mode, so the beam blinked.
-            if ((lightState != 255) && (si.item is not null) && si.item.TryGetComponent(out CustomItemBehaviour light)) {
-                light.state = lightState;
-                Body_UseItemInHand_MultiplayerPatch.HoldState(si.syncId, lightState);
-                Sound.Play("flashlighttoggle", si.item.transform.position);
-            } else {
-                ItemSync.BetterUseItem(target_nb.body, si.item);
-            }
-        }
-    }
-
-    internal static void SendLightMode(SyncInfo si, NetBody nb) {
-        if ((si is null) || (si.item is null) || !si.item.TryGetComponent(out CustomItemBehaviour light)) {
-            return;
-        }
-        knetid user = nb.plr != null ? nb.plr.playerId : default;
-        LiteNetLib.Utils.NetDataWriter writer = Net.CreateWriter(NetmsgId.CLIENT_RequestUseItemRelay);
-        writer.Put(user);
-        writer.Put(si.syncId);
-        writer.Put(nb.netId);
-        writer.Put((byte)light.state);
-        Net.Server_SendToClients(DeliveryMethod.ReliableUnordered, writer, clientIds: ServerMain.GetListOfClientIdsExceptThisAndHost(user));
-    }
-
 }
 
 
@@ -1026,6 +1055,11 @@ public static class Body_Attack_MultiplayerPatch {
 
         StaticHitValidation = false;
         breakTheAttackLoop = false;
+        // Issue #62: 当手持近战工具开启 Headpat 抚摸并左键点击时，HeadpatSession.BlockAttack.Prefix 返回 false 短路 Body.Attack，
+        // 导致本补丁 Prefix 被跳过、引用类型 __state 保持为 null，而 Harmony 仍会执行 Postfix；此处提前返回以防解引用崩溃。
+        if (__state == null) {
+            return;
+        }
 
         var attackerIsLocal = Util.IsBodyLocal(__instance);
 
@@ -2158,8 +2192,22 @@ public static class GunScript_Fire_MultiplayerPatch {
 
     }
     static void PlayerBodyShoot_VisualsTypeShit(knetid shooter_clientid, SyncInfo gun_si, Vector2 gun_barrel_origin, Vector2 gun_barrel_direction) {
+        var gun = gun_si != null ? gun_si.gun : null;
+        if (gun == null || gun_si.go == null) {
+            return;
+        }
+        // Issue #50: 远端枪械刚从容器/背槽切出或同帧实例化尚未执行 GunScript.Start() 时，私有引用 it 与 render 仍为 null；
+        // 必须在此惰性补齐，否则下方 gun.Update() -> Fire() 在扣减 it.condition 或刷新 render.sprite 时会抛 NRE 并吞掉枪声与弹道。
+        if (gun.it == null) {
+            gun.it = gun.GetComponent<Item>();
+        }
+        if (gun.render == null) {
+            gun.render = gun.GetComponent<SpriteRenderer>();
+        }
+        if (gun.it == null || gun.render == null) {
+            return;
+        }
 
-        var gun = gun_si.gun;
         var gst = gun_si.go.GetOrAddComponent<TrackerGunScript>();
 
         gst.override_shoot_trajectory = true;
@@ -2172,7 +2220,10 @@ public static class GunScript_Fire_MultiplayerPatch {
 
         if (gun.roundInChamber != RoundInChamber.Round) {
             if (gun.roundInChamber == RoundInChamber.Casing) { // force eject the casing , because the gun didnt  jam on their end
-                (UnityEngine.Object.Instantiate(Resources.Load("casing"), gun.transform.position, gun.transform.rotation) as GameObject).GetComponent<Rigidbody2D>().velocity = gun.transform.up * 12f;
+                var casing = UnityEngine.Object.Instantiate(Resources.Load("casing"), gun.transform.position, gun.transform.rotation) as GameObject;
+                if (casing != null && casing.TryGetComponent<Rigidbody2D>(out var casingRb)) {
+                    casingRb.velocity = gun.transform.up * 12f;
+                }
             }
 
             gun.roundInChamber = RoundInChamber.Round;

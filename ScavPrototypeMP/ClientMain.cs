@@ -234,6 +234,9 @@ public class ClientMain : MonoBehaviour {
 
         var locplr = ScavPlayer.LocalPlayer;
         if (Net.IsConnected && locplr != null) {
+            if (Net.IsClient) {
+                UnicodeFontFallback.Client_TrySendUnicodeNameIfNeeded();
+            }
 
             double raw_sync_delta = Time.realtimeSinceStartupAsDouble - _last_sync_time;
             if (raw_sync_delta < 0) {
@@ -975,9 +978,11 @@ public class ClientMain : MonoBehaviour {
                 Multiplayer.DoMultiplayerStatusMessageLog("Received RegenerateWorld announcement.");
             }
 
-            //OG: WorldGeneration.ContinueRun 
-
-            PlayerCamera.main.body.forceWalk = false;
+            //OG: WorldGeneration.ContinueRun
+            // Issue #3：死亡或观战中的客机在切层重建世界时 PlayerCamera.main.body 可能为空，必须判空避免抛 NRE 阻断 RegenerateWorld 协程
+            if (PlayerCamera.main?.body != null) {
+                PlayerCamera.main.body.forceWalk = false;
+            }
             wginst.savePanel.SetActive(false);
 
             //OG: DrillPod.Update is also sligtly mixed into this  
@@ -1029,9 +1034,11 @@ public class ClientMain : MonoBehaviour {
 
     [ClientReceiver((byte)NetmsgId.ServerInfoUpdate, false)]
     static void ClientReceiver__ServerInfoUpdate(knetid _, LiteNetLib.Utils.NetDataReader reader) {
-
         Net.CurrentServerInfo.Deserialize(reader);
-
+        // 服务端在 ScavPlayer.Start 登记客户端映射后立即下发 ServerInfoUpdate，此时上报 Unicode 真实昵称可确保服务端已就绪接收
+        if (Net.IsRunning && Net.IsClient) {
+            UnicodeFontFallback.Client_TrySendUnicodeNameIfNeeded();
+        }
     }
 
 
