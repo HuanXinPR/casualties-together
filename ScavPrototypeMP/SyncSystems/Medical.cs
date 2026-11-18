@@ -905,6 +905,12 @@ public struct CharacterHealthStateSyncPacket : INetSerializeByMemcpy {
 [HarmonyPatch(typeof(WoundViewLimb), nameof(WoundViewLimb.OnPointerEnter))]
 public static class WoundViewLimb_OnPointerEnter_MultiplayerPatch {
     static bool Prefix(WoundViewLimb __instance) {
+        if (!Net.IsRunning) {
+            return true;
+        }
+        if (__instance.woundview == null || __instance.woundview.body == null) {
+            return false;
+        }
         // bug report by uzelezz
         // replaced PlayerCamera.main.body with the body field from woundview, so it will work if i have amputated limb
         if (!__instance.woundview.body.limbs[__instance.limb].dismembered) {
@@ -1687,6 +1693,9 @@ public static class PlayerCamera_ToggleWoundView_MultiplayerPatch {
     }
     public static Body body_to_open = null;
     public static bool Prefix(PlayerCamera __instance, bool sound) {
+        if (!Net.IsRunning) {
+            return true;
+        }
 
         WoundView_UpdateView_MultiplayerPatch.lastHealerList.Clear();
         WoundView_UpdateView_MultiplayerPatch.ClearHealerUI();
@@ -1759,6 +1768,9 @@ public static class PlayerCamera_ToggleWoundView_MultiplayerPatch {
 
     // 兜底保证 mainView 与 woundView 严格互斥反相，防止 UpdateView 抛异常导致 HUD 永久隐身并阻断当帧输入
     public static Exception Finalizer(PlayerCamera __instance, Exception __exception) {
+        if (!Net.IsRunning) {
+            return __exception;
+        }
         if (__instance != null && __instance.mainView != null && __instance.woundView != null) {
             __instance.mainView.SetActive(!__instance.woundView.activeSelf);
         }

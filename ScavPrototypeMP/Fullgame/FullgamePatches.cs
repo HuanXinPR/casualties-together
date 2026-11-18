@@ -61,6 +61,9 @@ public static class FullgameCompatExtensions {
 public class FullgameMultiplayerPatcher : CasualtiesTogetherSingleton {
     bool _lastCutsceneActive;
     bool _cutsceneArmed;
+    private static bool _capturedVanillaMineDismember;
+    private static float _vanillaMineDismemberChance;
+    private bool _appliedMpMineDismember;
 
     void Start() {
 #if RELEASE
@@ -68,12 +71,28 @@ public class FullgameMultiplayerPatcher : CasualtiesTogetherSingleton {
             return;
         }
 #endif
+        if (!_capturedVanillaMineDismember && Constants.DefaultMineExplosionParams != null) {
+            _vanillaMineDismemberChance = Constants.DefaultMineExplosionParams.GetDismemberChance();
+            _capturedVanillaMineDismember = true;
+        }
+        SyncMineDismemberChance();
+    }
 
-        Traverse.Create(Constants.DefaultMineExplosionParams).Field("dismemberChance").SetValue(0.15f);
+    private void SyncMineDismemberChance() {
+        if (!_capturedVanillaMineDismember || Constants.DefaultMineExplosionParams == null) {
+            return;
+        }
+        bool wantMp = Net.IsRunning;
+        if (wantMp == _appliedMpMineDismember) {
+            return;
+        }
+        _appliedMpMineDismember = wantMp;
+        Constants.DefaultMineExplosionParams.SetDismemberChance(wantMp ? 0.15f : _vanillaMineDismemberChance);
     }
 
 #if FULLGAME
     void Update() {
+        SyncMineDismemberChance();
         if (!Net.IsRunning || !Util.IsInWorld() || WorldGeneration.world == null) {
             _cutsceneArmed = false;
             return;

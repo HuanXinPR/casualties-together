@@ -151,7 +151,7 @@ public static class CharacterSpawn {
 
     // host console: force species for a living player, optionally wipe XP to that species' base skills,
     // sync to their client via characterSelected, then checkpoint-save their player file.
-    public static void ServerForceSwapSpecies(ScavPlayer plr, int chr, bool wipeXp) {
+    public static void ServerForceSwapSpecies(ScavPlayer plr, int chr, bool wipeXp, bool dropInventory = true) {
         if (!Net.IsServer || plr == null) {
             return;
         }
@@ -182,7 +182,7 @@ public static class CharacterSpawn {
         }
 
         if (plr.body != null && plr.body.charType != chr) {
-            RebuildBodyMesh(plr, chr, dropInventory: true);
+            RebuildBodyMesh(plr, chr, dropInventory: dropInventory);
         } else if (plr.body != null) {
             plr.body.charType = chr;
             ItemSync.RefreshWearableSpeciesSprites(plr.body);

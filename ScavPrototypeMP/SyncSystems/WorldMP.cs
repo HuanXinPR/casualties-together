@@ -814,7 +814,7 @@ public class WorldMP : CasualtiesTogetherSingleton {
             WorldChunkSync.TilemapSyncUpdate();
         }
 
-        if (Util.TryGetLocalBody(out var LOCBODY) && !LOCBODY.alive) { UIInGame.StartSpectatorMode(); }
+        if (Net.IsRunning && Util.TryGetLocalBody(out var LOCBODY) && !LOCBODY.alive) { UIInGame.StartSpectatorMode(); }
 
 #if FULLGAME
         if (Net.IsRunning && Net.IsClient) {
@@ -827,7 +827,7 @@ public class WorldMP : CasualtiesTogetherSingleton {
         log.l("WorldGeneration.FinishWorldGeneration");
 
 
-        if (Util.TryGetLocalBody(out LOCBODY) && !LOCBODY.alive) { UIInGame.StartSpectatorMode(); }
+        if (Net.IsRunning && Util.TryGetLocalBody(out LOCBODY) && !LOCBODY.alive) { UIInGame.StartSpectatorMode(); }
 
         aaaaaaaaaaaaaaaaaaaaaaaaaaa = null;
         bbbbbbbbbbbbbbbbbbbbbbbbbbb = null;
@@ -1073,6 +1073,9 @@ public class WorldMP : CasualtiesTogetherSingleton {
 [HarmonyPatch(typeof(WorldGeneration), nameof(WorldGeneration.Clear))]
 static class WorldGeneration_Clear_InactiveBuildings {
     static void Prefix() {
+        if (!Net.IsRunning) {
+            return;
+        }
         BuildingEntity[] buildings = UnityEngine.Object.FindObjectsOfType<BuildingEntity>(true);
         for (int i = 0; i < buildings.Length; i++) {
             BuildingEntity building = buildings[i];

@@ -1529,7 +1529,9 @@ public class TrackerGunScript : BaseComponentTracker<GunScript> {
 
     protected override void TrackerAwake() {
         shotsPerFire = og.shotsPerFire;
-        og.shotsPerFire = 0; // the gun wont shoot anymore
+        if (Net.IsRunning) {
+            og.shotsPerFire = 0; // the gun wont shoot anymore
+        }
 
 
         InvokeRepeating("SlowUpdate", 1.0f, 0.1f);
@@ -1736,6 +1738,19 @@ public class TrackerGunScript : BaseComponentTracker<GunScript> {
 }
 
 
+internal static class GunCombatBodyGate {
+    /// <summary>
+    /// 供 <see cref="GunScript.Fire"/> 与 <see cref="GunScript.UnloadMag"/> 的 Transpiler 调用：
+    /// 单机模式下直接返回原版 <c>gun.body</c> 以避免挂载 <see cref="TrackerGunScript"/> 清零 <c>shotsPerFire</c>；联机模式下走追踪器覆写躯体。
+    /// </summary>
+    internal static Body ResolveGunBody(GunScript gun) {
+        if (!Net.IsRunning) {
+            return gun.body;
+        }
+        return gun.GetOrAddComponent<TrackerGunScript>().GetBody();
+    }
+}
+
 [HarmonyPatch(typeof(GunScript), nameof(GunScript.Fire))]
 public static class GunScript_Fire_MultiplayerPatch {
 
@@ -1744,13 +1759,10 @@ public static class GunScript_Fire_MultiplayerPatch {
 
 
     internal static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions) {
-
-
-        // we convert the instructions to a list so we can more easily navigate them
         var instructionList = instructions.ToList();
         int i = 0;
-
         bool didit = false;
+        var resolveBodyMethod = AccessTools.Method(typeof(GunCombatBodyGate), nameof(GunCombatBodyGate.ResolveGunBody));
 
         while (i < instructionList.Count) {
             var code = instructionList[i];
@@ -1761,19 +1773,11 @@ public static class GunScript_Fire_MultiplayerPatch {
                 method.Name == "get_body" &&
                 method.DeclaringType == typeof(GunScript)
             ) {
-
-                var getComponentMethod = typeof(Unity.VisualScripting.ComponentHolderProtocol).GetMethod(nameof(Unity.VisualScripting.ComponentHolderProtocol.GetOrAddComponent), BindingFlags.Static | BindingFlags.Public);
-                var getComponentGeneric = getComponentMethod.MakeGenericMethod(typeof(TrackerGunScript));
-
-                var getTheOtherPartMethod = typeof(TrackerGunScript).GetMethod(nameof(TrackerGunScript.GetBody), BindingFlags.Public | BindingFlags.Instance);
-
-                yield return new CodeInstruction(OpCodes.Call, getComponentGeneric); // get the component
-                yield return new CodeInstruction(OpCodes.Callvirt, getTheOtherPartMethod); // call GetBody
+                var callInst = new CodeInstruction(OpCodes.Call, resolveBodyMethod);
+                callInst.MoveLabelsFrom(code);
+                yield return callInst;
                 i++;
                 didit = true;
-#if DEBUG
-                Plugin.log.LogInfo($"GunScript_Fire_MultiplayerPatch: Succesfully patched the body getters {i} ");
-#endif
             } else {
                 yield return instructionList[i];
                 i++;
@@ -1794,6 +1798,9 @@ public static class GunScript_Fire_MultiplayerPatch {
 
     public static void Prefix(GunScript __instance, bool suicide, ref GunScript __state) {
         __state = GunScript_Update_MultiplayerPatch.current_executing_gun;
+        if (!Net.IsRunning) {
+            return;
+        }
         if (__state == null) {
             GunScript_Update_MultiplayerPatch.current_executing_gun = __instance;
         }
@@ -1814,6 +1821,9 @@ public static class GunScript_Fire_MultiplayerPatch {
 
     }
     static void Postfix(GunScript __instance, bool suicide, ref GunScript __state) {
+        if (!Net.IsRunning) {
+            return;
+        }
         try {
             _GunFirePostfix_CheckForHitsAndTellServer(__instance, suicide);
         } catch (Exception e) {
@@ -2202,10 +2212,11 @@ public static class GunScript_JamChance_MultiplayerPatch {
     public static bool ForceJam = false; // decided by the client
 
     static void Postfix(GunScript __instance, ref float __result) {
-
-
+        if (!Net.IsRunning) {
+            return;
+        }
         var gst = __instance.GetOrAddComponent<TrackerGunScript>();
-        if (gst.body.TryGetNetBody(out var nb)) {
+        if (gst.body != null && gst.body.TryGetNetBody(out var nb)) {
 
             if (!nb.IsLocal) {
                 if (ForceJam) {
@@ -2759,7 +2770,9 @@ public static class GunScript_UnloadMag_MultiplayerPatch {
     }
 
     public static void Prefix(GunScript __instance) {
-        // because i transpiled shit this component basically required
+        if (!Net.IsRunning) {
+            return;
+        }
         var tracker = __instance.GetOrAddComponent<TrackerGunScript>();
     }
 }
@@ -2775,6 +2788,9 @@ public static class GunScript_UnloadMag_MultiplayerPatch {
 public static class GunScript_Update_MultiplayerPatch {
     public static GunScript current_executing_gun = null;
     static void Prefix(GunScript __instance) {
+        if (!Net.IsRunning) {
+            return;
+        }
         current_executing_gun = __instance;
     }
     static void Postfix(GunScript __instance) {
@@ -2786,6 +2802,9 @@ public static class GunScript_Update_MultiplayerPatch {
 [HarmonyPatch(typeof(GunScript), nameof(GunScript.Start))]
 public static class GunScript_Start_MultiplayerPatch {
     static void Postfix(GunScript __instance) {
+        if (!Net.IsRunning) {
+            return;
+        }
         var tracker = __instance.GetOrAddComponent<TrackerGunScript>();
 
         // because i transpile shit, its basically required

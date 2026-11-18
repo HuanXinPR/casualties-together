@@ -412,6 +412,8 @@ public class NetBody : MonoBehaviour {
     // scatter penalty: mood offset 0..-30, -1 / 5s out of range, +2 / 5s when back
     public float scatterMoodOffset = 0f;
     float scatterMoodTick;
+    internal bool handSwitched;
+    internal ushort handSwitchTick;
 
     void Awake() {
 

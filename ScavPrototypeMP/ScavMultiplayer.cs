@@ -140,6 +140,8 @@ public partial struct MultiplayerGameRules : INetSerializeByMemcpy {
     public bool Permadeath = false;         // DONE // disable all forms of non-cheat respawn
     public bool ReviveOnNextLevel = false;  // DONE // respawn all dead players when reaching next layer
     public bool ReviveFromTrader = true;    // DONE //  recruit trader as a form of respawn
+    // v5.5.3 线上协议字段：紧接 ReviveFromTrader 之后填满原有对齐填充字节，保证 INetSerializeByMemcpy 内部偏移与原版一致
+    public bool TraderReviveAsSpecies = false;
 
 
     public bool RespawnKeepInventory = false;

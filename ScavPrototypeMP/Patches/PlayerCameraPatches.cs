@@ -191,7 +191,11 @@ static class GlobalDark_Update_DontEatClicks {
 [HarmonyPatch(typeof(PlayerCamera), nameof(PlayerCamera.LateUpdate))]
 public static class PlayerCamera_LateUpdate_TraderHold {
     private static void Postfix(PlayerCamera __instance) {
+        if (!Net.IsRunning) {
+            return;
+        }
         TraderPinLog.Hold(__instance);
+        PlayerCamera_SwitchHands_MultiplayerPatch.RefreshHandIcon(__instance);
 
         // keep the vanilla body-based reading for living players. Once the
         // local player is dead, make the reading follow the spectator camera.
@@ -242,15 +246,6 @@ public static class PlayerCamera_Update_MultiplayerPatch {
     }
     static void Postfix(PlayerCamera __instance) {
 
-        // panel still up on a body that disconnected, or the hud got left off after a bad close.
-        if (__instance.mainView != null && !__instance.mainView.activeSelf) {
-            bool panel = __instance.woundView != null && __instance.woundView.activeSelf;
-            if (!panel || PlayerCamera_ToggleWoundView_MultiplayerPatch.HealthTargetGone())
-                PlayerCamera_ToggleWoundView_MultiplayerPatch.CloseHealthPanel(__instance);
-        } else if (UIInGame.interaction_menu_target_body != null && UIInGame.interaction_menu_target_body.syncBody == null) {
-            UIInGame.StopPlayerInteractionMenu();
-        }
-
         // shutdown the tooltip
         if (Con._DEV_HIDEHUD) {
             GlobalDark.main?.SetTooltip(("", ""));
@@ -259,6 +254,17 @@ public static class PlayerCamera_Update_MultiplayerPatch {
 
 
         if (Net.IsRunning) {
+            PlayerCamera_SwitchHands_MultiplayerPatch.RefreshHandIcon(__instance);
+
+            // panel still up on a body that disconnected, or the hud got left off after a bad close.
+            if (__instance.mainView != null && !__instance.mainView.activeSelf) {
+                bool panel = __instance.woundView != null && __instance.woundView.activeSelf;
+                if (!panel || PlayerCamera_ToggleWoundView_MultiplayerPatch.HealthTargetGone())
+                    PlayerCamera_ToggleWoundView_MultiplayerPatch.CloseHealthPanel(__instance);
+            } else if (UIInGame.interaction_menu_target_body != null && UIInGame.interaction_menu_target_body.syncBody == null) {
+                UIInGame.StopPlayerInteractionMenu();
+            }
+
             var pc = __instance;
             var body = pc.body;
 
@@ -488,6 +494,12 @@ static class PlayerCamera_UIOverrideTryPickupFromWorld_MultiplayerPatch {
 static class PlayerCamera_ToMainMenu_MultiplayerPatch {
     // 修正 __instance 参数类型为目标类 PlayerCamera，防止 Harmony 绑定失败跳过返回主菜单时的断连与 HUD 复位
     static void Prefix(PlayerCamera __instance) {
+        // 单机直通模式下不触碰联机注册表，更不得置 showMultiplayerMenu = true 污染单机主菜单
+        if (!Net.IsRunning) {
+            Con.UnNoclip();
+            return;
+        }
+
 #if FULLGAME
         ConcurrentEndings.KeepSpectating = false;
         ConcurrentEndings.SuppressDeathScreen = false;
@@ -499,29 +511,23 @@ static class PlayerCamera_ToMainMenu_MultiplayerPatch {
 
         Con.UnNoclip();
 
-        if (Net.IsRunning) {
-            UIInGame.StopSpectatorMode();
+        UIInGame.StopSpectatorMode();
 
-            if (Net.IsClient) {
-                if (
-                    Multiplayer.showMultiplayerMenu// cuz its set to true from the server call, stupidly, but i use this
-                ) {
-
-                } else {
-                    Multiplayer.DoMultiplayerStatusMessageLog("Disconnecting because im going to main menu on my own!");
-                    Multiplayer._JustDisconnect();
-                    Chat.LogMessage(Chat.NAMELABEL_LOCALSYSTEM, "Left the server.");
-                }
-            } else {
-                Multiplayer.DoMultiplayerStatusMessageLog("Announcing GoBackToMainMenu.");
-
-                var writer = Net.CreateWriter(NetmsgId.CLIENT_GoBackToMainMenu);
-                writer.Put(0);
-                Net.Server_SendToClientsVeryReliable(writer, ServerMain.AllClientIdsExceptHost);
-                // WRITER END;
-
-                Chat.Server_ChatAnnouncement($"<key:host_gotomainmenu>");
+        if (Net.IsClient) {
+            if (!Multiplayer.showMultiplayerMenu) {
+                Multiplayer.DoMultiplayerStatusMessageLog("Disconnecting because im going to main menu on my own!");
+                Multiplayer._JustDisconnect();
+                Chat.LogMessage(Chat.NAMELABEL_LOCALSYSTEM, "Left the server.");
             }
+        } else {
+            Multiplayer.DoMultiplayerStatusMessageLog("Announcing GoBackToMainMenu.");
+
+            var writer = Net.CreateWriter(NetmsgId.CLIENT_GoBackToMainMenu);
+            writer.Put(0);
+            Net.Server_SendToClientsVeryReliable(writer, ServerMain.AllClientIdsExceptHost);
+            // WRITER END;
+
+            Chat.Server_ChatAnnouncement($"<key:host_gotomainmenu>");
         }
 
         Multiplayer.showMultiplayerMenu = true;
@@ -647,6 +653,10 @@ public static class PlayerCamera_SetTimeScale_MultiplayerPatch {
 [HarmonyPatch(typeof(PlayerCamera), nameof(PlayerCamera.UpdateWearables))]
 public static class PlayerCamera_UpdateWearables_MultiplayerPatch {
     static void Prefix(PlayerCamera __instance, ref Body __state) {
+        __state = __instance.body;
+        if (!Net.IsRunning) {
+            return;
+        }
         if (__instance.body == null) {
             __instance.body = Util.GetLocalBody();
         }
@@ -656,6 +666,9 @@ public static class PlayerCamera_UpdateWearables_MultiplayerPatch {
         }
     }
     static void Postfix(PlayerCamera __instance, ref Body __state) {
+        if (!Net.IsRunning) {
+            return;
+        }
         __instance.body = __state;
     }
 }
@@ -664,6 +677,9 @@ public static class PlayerCamera_UpdateWearables_MultiplayerPatch {
 [HarmonyPatch(typeof(PlayerCamera), nameof(PlayerCamera.TryPerformRadialAction))]
 public static class PlayerCamera_TryPerformRadialAction_MultiplayerPatch {
     static bool Prefix(ref bool __result) {
+        if (!Net.IsRunning) {
+            return true;
+        }
         if (InvButton_get_body_MultiplayerPatch.focused_body != null) {
             __result = false;
             return false;
@@ -905,10 +921,32 @@ public static class PlayerCamera_HandleInput_MultiplayerPatch {
 public static class PlayerCamera_SwitchHands_MultiplayerPatch {
 
     public static void Postfix() {
-        if (Net.IsRunning) {
+        if (Net.IsRunning && PlayerCamera.main?.body != null) {
+            RefreshHandIcon(PlayerCamera.main);
+            Multiplayer.Client_SendSimpleMessageToServer((byte)NetmsgId.SERVER_PlayerCamera_SwitchHands, (ushort)(PlayerCamera.main.body.handSlot), false);
+            if (!Net.IsServer) {
+                ClientMain.Client_SendCharacterSyncPacket();
+            }
+        }
+    }
 
-            Multiplayer.Client_SendSimpleMessageToServer((byte)NetmsgId.SERVER_PlayerCamera_SwitchHands, (ushort)(PlayerCamera.main.body.handSlot), true);
-
+    internal static void RefreshHandIcon(PlayerCamera pc) {
+        if (!Net.IsRunning || pc == null || pc.body == null || pc.handSwapImage == null || pc.handSwapSprites == null) {
+            return;
+        }
+        int handSlot = pc.body.handSlot;
+        if (handSlot < 0 || handSlot >= pc.handSwapSprites.Length) {
+            return;
+        }
+        Sprite sprite = pc.handSwapSprites[handSlot];
+        if (sprite != null) {
+            if (pc.handSwapImage.sprite != sprite) {
+                pc.handSwapImage.sprite = sprite;
+            }
+            int otherSlot = handSlot == 0 ? 1 : 0;
+            if (otherSlot < pc.handSwapSprites.Length && pc.handSwapImage.overrideSprite == pc.handSwapSprites[otherSlot]) {
+                pc.handSwapImage.overrideSprite = null;
+            }
         }
     }
 
@@ -927,6 +965,12 @@ public static class PlayerCamera_SwitchHands_MultiplayerPatch {
 
         if (ScavPlayer.TryGetPlayerFromClientId(clientId, out var plr) && plr.IsAlive()) {
             plr.body.handSlot = (int)handslot;
+            NetBody netBody = plr.netBody;
+            if (netBody != null) {
+                netBody.handSwitched = true;
+                netBody.handSwitchTick = Net.ServerTick;
+                netBody.syncBody?.WriteBodyData();
+            }
 
             if (DebugHelp._DEV_VISUALISE_NET_EVENTS) DebugHelp.OnNetEvent(plr.body.transform.position, $"S: PlayerCamera_SwitchHands {handslot}");
 
@@ -944,7 +988,7 @@ public static class PlayerCamera_SwitchHands_MultiplayerPatch {
     }
 
 
-    [ClientReceiver((byte)NetmsgId.CLIENT_PlayerCamera_SwitchHandsRelay)]
+    [ClientReceiver((byte)NetmsgId.CLIENT_PlayerCamera_SwitchHandsRelay, true)]
     static void Client_PlayerCamera_SwitchHands(knetid _, LiteNetLib.Utils.NetDataReader reader) {
 #if DEBUG
         log.l($"Client_PlayerCamera_SwitchHands actually works lol  ");
@@ -952,10 +996,8 @@ public static class PlayerCamera_SwitchHands_MultiplayerPatch {
         reader.Get(out knetid who);
         reader.Get(out byte handslot);
 
-        if (ScavPlayer.TryGetPlayerFromClientId(who, out var plr) && plr.body && !plr.IsLocal) {
-            plr.body.handSlot = (int)handslot;
-
-            if (DebugHelp._DEV_VISUALISE_NET_EVENTS) DebugHelp.OnNetEvent(plr.body.transform.position, $"C: PlayerCamera_SwitchHandsRelay {handslot}");
+        if (ScavPlayer.TryGetPlayerFromClientId(who, out var plr) && plr.body && !plr.IsLocal && DebugHelp._DEV_VISUALISE_NET_EVENTS) {
+            DebugHelp.OnNetEvent(plr.body.transform.position, $"C: PlayerCamera_SwitchHandsRelay {handslot}");
         }
     }
 }
@@ -1086,6 +1128,27 @@ static class PlayerCamera_ToggleTradeMenu_MultiplayerPatch {
         log.l($"Recruiting {trader_si} -> to respawn {available_plr}");
 
         available_plr.Server_RespawnCharacter(trader_si.transformPosition + Vector2.up * 1.5f, true);
+#if FULLGAME
+        if (Multiplayer.rules.TraderReviveAsSpecies && trader_tracker.og != null) {
+            int traderSpecies = CharacterSpawn.ClampChar(trader_tracker.og.character);
+            if (available_plr.body == null || available_plr.body.charType != traderSpecies) {
+                List<Item> preservedInventory = null;
+                if (Multiplayer.rules.RespawnKeepInventory && available_plr.body != null) {
+                    preservedInventory = available_plr.body.GetAllItemsThorough();
+                    available_plr.body.Body_DropAllItems();
+                }
+                CharacterSpawn.ServerForceSwapSpecies(available_plr, traderSpecies, !Multiplayer.rules.RespawnKeepSkills, dropInventory: false);
+                if (preservedInventory != null && available_plr.body != null) {
+                    for (int i = 0; i < preservedInventory.Count; i++) {
+                        Item keptItem = preservedInventory[i];
+                        if (keptItem != null) {
+                            available_plr.body.AutoPickUpItem(keptItem);
+                        }
+                    }
+                }
+            }
+        }
+#endif
         for (int i = 0; i < Math.Min(trader_tracker.og.items.Count, RANDOM_ITEMS_TO_GIVE_AFTER_RESPAWN); i++) {
             int randindex = UnityEngine.Random.Range(0, trader_tracker.og.items.Count);
             TraderItem item = trader_tracker.og.items[randindex];
@@ -1344,29 +1407,30 @@ public static class PlayerCamera_SetIrradiateIntensity_MultiplayerPatch {
     }
 }
 
+internal static class UnconsciousTimeScaleGate {
+    internal static void SetTimeScaleIfSingleplayer(PlayerCamera cam, PlayerCamera.SpeedType speed) {
+        if (!Net.IsRunning && cam != null) {
+            cam.SetTimeScale(speed);
+        }
+    }
+}
+
 [HarmonyPatch(typeof(PlayerCamera), nameof(PlayerCamera.HandleUnconsciousScreen))]
 public static class vyosna_dawn_HandleUnconsciousScreen_Patch {
     private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions) {
         List<CodeInstruction> list = new List<CodeInstruction>(instructions);
-        List<int> OccurrencesToRemove = new List<int> { 0, 1 };
-        int CurrentOccurrence = 0;
-        int i = 0;
-        while (i < instructions.Count() && CurrentOccurrence < OccurrencesToRemove.Count) {
-            MethodBase method;
-            if (list[i].ToString().Contains(nameof(PlayerCamera.SetTimeScale)) && OccurrencesToRemove.Contains(CurrentOccurrence) && (method = (list[i].operand as MethodBase)) != null) {
-                list[i].opcode = OpCodes.Nop;
-                list[i].operand = null;
-                int GoBackwards = method.GetParameters().Length;
-                if (!method.IsStatic) {
-                    GoBackwards++;
-                }
-                for (int Key = i; Key >= i - GoBackwards; Key--) {
-                    list[Key].opcode = OpCodes.Nop;
-                    list[Key].operand = null;
-                }
-                CurrentOccurrence++;
+        MethodInfo gatedMethod = AccessTools.Method(typeof(UnconsciousTimeScaleGate), nameof(UnconsciousTimeScaleGate.SetTimeScaleIfSingleplayer));
+        List<int> occurrencesToRedirect = new List<int> { 0, 1 };
+        int currentOccurrence = 0;
+        for (int i = 0; i < list.Count && currentOccurrence < occurrencesToRedirect.Count; i++) {
+            if (list[i].ToString().Contains(nameof(PlayerCamera.SetTimeScale))
+                && occurrencesToRedirect.Contains(currentOccurrence)
+                && list[i].operand is MethodBase) {
+                // 仅在联机下抑制昏迷自动时间加速；单机模式下保留原版 SetTimeScale 调用
+                list[i].opcode = OpCodes.Call;
+                list[i].operand = gatedMethod;
+                currentOccurrence++;
             }
-            i++;
         }
         return list;
     }

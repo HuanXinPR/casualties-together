@@ -222,10 +222,257 @@ static class SeasonalManager_GetSeasonalEvent_HostAuthority_MultiplayerPatch {
     }
 }
 
-// host-sim damage / chase for fullgame-only hazards (clients keep Update cosmetics where separate)
+internal sealed class FanClientFollow : MonoBehaviour {
+    public float HostSpin = -1f;
+    public bool NotedDead;
+}
+
+/// <summary>
+/// 风扇陷阱（<see cref="FanTrap"/>）转速、期望转速与扇叶断裂状态的 <see cref="SyncInfo.specialdata1"/> / <see cref="SyncInfo.specialdata2"/> 编解码及客机推人模拟。
+/// </summary>
+internal static class FanTrapSync {
+    internal static void Write(FanTrap fan, SyncInfo si, bool force = false) {
+        if (fan == null || si == null) {
+            return;
+        }
+        byte brokenBits = 0;
+        if (fan.fan1 != null && !fan.fan1.gameObject.activeSelf) {
+            brokenBits |= 1;
+        }
+        if (fan.fan2 != null && !fan.fan2.gameObject.activeSelf) {
+            brokenBits |= 2;
+        }
+        int multEncoded = Mathf.Clamp(Mathf.RoundToInt(fan.speedMult * 50f), 0, 63);
+        byte raw = (byte)(brokenBits | (multEncoded << 2));
+        float packed = PackSpeeds(fan.spinSpeed, fan.desiredSpinSpeed);
+        if (force || si.specialdata1.Value != raw) {
+            si.specialdata1.Value = raw;
+        }
+        if (force || Mathf.Abs(si.specialdata2.Value - packed) > 4f) {
+            si.specialdata2.Value = packed;
+        }
+    }
+
+    internal static void Push(FanTrap fan, bool force = false) {
+        if (fan != null && Net.IsRunning && Net.IsServer && NetObjectRegistry.TryGetSyncInfo(fan.gameObject, out SyncInfo si) && si != null) {
+            Write(fan, si, force);
+        }
+    }
+
+    internal static bool Pull(FanTrap fan) {
+        if (fan == null || !Net.IsRunning || Net.IsServer) {
+            return false;
+        }
+        if (!NetObjectRegistry.TryGetSyncInfo(fan.gameObject, out SyncInfo si) || si == null) {
+            return false;
+        }
+        return Apply(fan, si.specialdata1.Value, si.specialdata2.Value);
+    }
+
+    static float PackSpeeds(float spin, float desired) {
+        int s = Mathf.Clamp(Mathf.RoundToInt(spin * 100f), 0, 2000);
+        int d = Mathf.Clamp(Mathf.RoundToInt(desired * 100f), 0, 2000);
+        return s + d * 4096f;
+    }
+
+    static void UnpackSpeeds(float packed, out float spin, out float desired) {
+        int d = Mathf.FloorToInt(packed / 4096f);
+        int s = Mathf.RoundToInt(packed - d * 4096f);
+        if (s < 0) {
+            s = 0;
+        }
+        spin = s / 100f;
+        desired = d / 100f;
+    }
+
+    internal static bool Apply(FanTrap fan, byte raw, float packed) {
+        if (fan == null) {
+            return false;
+        }
+        int brokenBits = raw & 3;
+        int multEncoded = (raw >> 2) & 0x3F;
+        if (multEncoded == 0 && brokenBits == 0 && packed < 1f) {
+            return false;
+        }
+        UnpackSpeeds(packed, out float spin, out float desired);
+        fan.speedMult = multEncoded / 50f;
+        fan.desiredSpinSpeed = desired;
+
+        FanClientFollow follow = fan.GetComponent<FanClientFollow>();
+        if (follow == null) {
+            follow = fan.gameObject.AddComponent<FanClientFollow>();
+        }
+        bool announce = follow.HostSpin >= 0f;
+        if (follow.HostSpin < 0f || Mathf.Abs(follow.HostSpin - spin) > 0.04f) {
+            fan.spinSpeed = spin;
+            follow.HostSpin = spin;
+        }
+        MirrorBlade(fan.fan1, (brokenBits & 1) != 0, fan.transform.position, announce);
+        MirrorBlade(fan.fan2, (brokenBits & 2) != 0, fan.transform.position, announce);
+        if (fan.speedMult <= 0f && !follow.NotedDead) {
+            follow.NotedDead = true;
+            BuildingEntity build = fan.GetComponent<BuildingEntity>();
+            if (build != null) {
+                build.description = Locale.GetBuilding("fandsc2");
+            }
+        }
+        return true;
+    }
+
+    static void MirrorBlade(SpriteRenderer blade, bool broken, Vector3 pos, bool announce) {
+        if (blade == null) {
+            return;
+        }
+        if (broken) {
+            if (blade.gameObject.activeSelf) {
+                BuildingEntity.CreateBreakParticle(blade);
+                blade.gameObject.SetActive(false);
+                if (announce) {
+                    Sound.Play("fansnap", pos);
+                }
+            }
+        } else if (!blade.gameObject.activeSelf) {
+            blade.gameObject.SetActive(true);
+        }
+    }
+
+    internal static void DrawBlades(FanTrap fan) {
+        if (fan == null) {
+            return;
+        }
+        Pull(fan);
+        if (fan.speedMult <= 0f) {
+            fan.src?.Stop();
+            return;
+        }
+        SpriteRenderer[] blades = { fan.fan1, fan.fan2 };
+        for (int i = 0; i < blades.Length; i++) {
+            SpriteRenderer blade = blades[i];
+            if (blade == null || !blade.gameObject.activeSelf) {
+                continue;
+            }
+            float sin = fan.SinForSpin(fan.fanProgress + (float)i / blades.Length);
+            float depth = fan.DepthForSpin(fan.fanProgress + (float)i / blades.Length);
+            blade.transform.localPosition = Vector3.right * 3.375f * sin;
+            float scaleX = Mathf.Abs(sin) <= 0.07f ? Mathf.Sign(sin) * 0.07f : sin;
+            blade.transform.localScale = new Vector3(scaleX, 1f + depth * 0.25f);
+            blade.sortingOrder = depth > 0f ? 500 : -500;
+            float shade = Mathf.Lerp(0.4f, 1f, Mathf.InverseLerp(-1f, 1f, depth));
+            blade.color = new Color(shade, shade, shade);
+            blade.flipY = sin < 0f;
+            bool wasFront = fan.front != null && i < fan.front.Length && fan.front[i];
+            bool isFront = depth > 0f;
+            if (fan.front != null && i < fan.front.Length) {
+                fan.front[i] = isFront;
+            }
+            if (wasFront != isFront) {
+                ShoveLocal(fan, blade);
+            }
+        }
+        if (fan.src != null) {
+            fan.src.pitch = fan.spinSpeed * 0.62f * fan.speedMult;
+            fan.src.volume = Mathf.Clamp01(fan.spinSpeed * 0.25f) * 0.66f;
+        }
+    }
+
+    static void ShoveLocal(FanTrap fan, SpriteRenderer blade) {
+        Vector2 dir = blade.transform.right.normalized * blade.transform.localScale.x;
+        if (dir == Vector2.zero) {
+            dir = Vector2.right;
+        }
+        RaycastHit2D[] hits = Physics2D.RaycastAll(fan.transform.position, dir, 6.5f, LayerMask.GetMask("Body", "Limb"));
+        for (int i = 0; i < hits.Length; i++) {
+            RaycastHit2D hit = hits[i];
+            if (hit.collider == null || !Utils.GetBody(hit.collider.gameObject, out Body body) || !body.IsBodyLocal()) {
+                continue;
+            }
+            body.DoGoreSound();
+            if (fan.spinSpeed >= 2f) {
+                body.Ragdoll();
+            } else {
+                body.crouchAmount += 0.3f;
+                body.SetVelocity(dir * fan.spinSpeed * 7.5f);
+                body.liquidSlipTime += 0.35f;
+            }
+            Limb closest = body.GetClosestLimb(hit.point);
+            if (closest != null && closest.rb != null) {
+                closest.rb.velocity = dir * fan.spinSpeed * 5f;
+                Limb[] connected = closest.connectedLimbs;
+                if (connected != null) {
+                    for (int k = 0; k < connected.Length; k++) {
+                        if (connected[k] != null && connected[k].rb != null) {
+                            connected[k].rb.velocity = dir * fan.spinSpeed * 5f;
+                        }
+                    }
+                }
+                if (body.limbs != null) {
+                    for (int l = 0; l < body.limbs.Length; l++) {
+                        closest.rb.velocity += dir * fan.spinSpeed * 2.5f;
+                    }
+                }
+            }
+            if (fan.spinSpeed > 2.25f) {
+                Sound.Play("loudstab", hit.point);
+            }
+            break;
+        }
+    }
+}
+
 [HarmonyPatch(typeof(FanTrap), "OnWillRenderObject")]
 static class FanTrap_OnWillRenderObject_HostSim_MultiplayerPatch {
-    static bool Prefix() => !Net.IsRunning || Net.IsServer;
+    static bool Prefix(FanTrap __instance) {
+        if (!Net.IsRunning || Net.IsServer) {
+            return true;
+        }
+        FanTrapSync.DrawBlades(__instance);
+        return false;
+    }
+
+    static void Postfix(FanTrap __instance) {
+        if (Net.IsRunning && Net.IsServer && __instance != null) {
+            FanTrapSync.Push(__instance);
+        }
+    }
+}
+
+[HarmonyPatch(typeof(FanTrap), nameof(FanTrap.BreakFan))]
+static class FanTrap_BreakFan_Publish_MultiplayerPatch {
+    static void Postfix(FanTrap __instance) {
+        if (Net.IsRunning && Net.IsServer && __instance != null) {
+            FanTrapSync.Push(__instance, force: true);
+        }
+    }
+}
+
+[HarmonyPatch(typeof(FanTrap), "Start")]
+static class FanTrap_Start_PublishSpeed_MultiplayerPatch {
+    static void Postfix(FanTrap __instance) {
+        if (!Net.IsRunning || __instance == null) {
+            return;
+        }
+        if (Net.IsServer) {
+            FanTrapSync.Push(__instance, force: true);
+        } else if (!FanTrapSync.Pull(__instance)) {
+            __instance.spinSpeed = 0f;
+            __instance.desiredSpinSpeed = 0f;
+        }
+    }
+}
+
+[HarmonyPatch(typeof(FanTrap), "Update")]
+static class FanTrap_Update_SpeedFollow_MultiplayerPatch {
+    static void Prefix(FanTrap __instance) {
+        if (Net.IsRunning && !Net.IsServer && __instance != null) {
+            FanTrapSync.Pull(__instance);
+        }
+    }
+
+    static void Postfix(FanTrap __instance) {
+        if (Net.IsRunning && Net.IsServer && __instance != null) {
+            FanTrapSync.Push(__instance);
+        }
+    }
 }
 
 
@@ -588,8 +835,30 @@ static class CeilingTurret_OnWillRenderObject_HostSim_MultiplayerPatch {
     static bool Prefix() => !Net.IsRunning;
 }
 
+internal sealed class CeilingTurretClient : MonoBehaviour {
+    public bool Seeing;
+    public float TimeSaw;
+}
+
 // host replacement for Update + OnWillRenderObject. picks any living player below the gun.
 internal static class CeilingTurretHostSim {
+    private struct SentAim {
+        public float Angle;
+        public float Next;
+        public bool Seeing;
+    }
+
+    private struct MoveSample {
+        public Vector2 Pos;
+        public float Time;
+        public bool Fast;
+    }
+
+    static readonly Dictionary<int, SentAim> Sent = new Dictionary<int, SentAim>();
+    static CeilingTurret[] _cached;
+    static int _cachedFrame = -1;
+    static readonly Dictionary<int, MoveSample> _moveSample = new Dictionary<int, MoveSample>();
+
     internal static void Tick(CeilingTurret ct) {
         if (ct == null) {
             return;
@@ -625,6 +894,9 @@ internal static class CeilingTurretHostSim {
                 source.volume = Mathf.MoveTowards(source.volume, 1f, Time.deltaTime * 3f);
             }
         } else {
+            if (!ct.alwaysSee) {
+                timeSaw = 0f;
+            }
             if (ct.lights != null) {
                 ct.lights.enabled = Mathf.PingPong(Time.time, 0.2f) > 0.1f;
             }
@@ -669,58 +941,79 @@ internal static class CeilingTurretHostSim {
             }
         }
         tr.Field("timeSawMovement").SetValue(timeSaw);
-        Publish(ct, gunAngle, fired, seeing);
+        Vector2 shotPos = lowerGun != null ? (Vector2)lowerGun.position : (Vector2)ct.transform.position;
+        Vector2 shotDir = lowerGun != null ? (Vector2)(-lowerGun.up) : Vector2.down;
+        Publish(ct, gunAngle, fired, seeing, timeSaw, shotPos, shotDir);
     }
 
-    struct SentAim {
-        public float Angle;
-        public float Next;
-    }
-
-    static readonly Dictionary<int, SentAim> Sent = new Dictionary<int, SentAim>();
-
-    static void Publish(CeilingTurret ct, float angle, bool fired, bool seeing) {
+    static void Publish(CeilingTurret ct, float angle, bool fired, bool seeing, float timeSaw, Vector2 shotPos, Vector2 shotDir) {
         if (ct == null || ServerMain.AllClientIdsExceptHost == null || ServerMain.AllClientIdsExceptHost.Count == 0) {
             return;
         }
         int id = ct.GetInstanceID();
         bool known = Sent.TryGetValue(id, out SentAim prev);
-        bool aimDue = fired || (seeing && (!known || Mathf.Abs(Mathf.DeltaAngle(prev.Angle, angle)) > 3f || Time.time >= prev.Next));
+        bool lostSight = known && prev.Seeing && !seeing;
+        bool aimDue = fired || lostSight || (seeing && (!known || Mathf.Abs(Mathf.DeltaAngle(prev.Angle, angle)) > 3f || Time.time >= prev.Next));
         if (!aimDue) {
             return;
         }
-        Sent[id] = new SentAim { Angle = angle, Next = Time.time + (fired ? 0.05f : 0.2f) };
+        Sent[id] = new SentAim {
+            Angle = angle,
+            Next = Time.time + (fired ? 0.05f : 0.2f),
+            Seeing = seeing,
+        };
+        ushort syncId = 0;
+        if (NetObjectRegistry.TryGetSyncInfo(ct.gameObject, out SyncInfo si) && si != null) {
+            syncId = si.syncId;
+        }
         NetDataWriter writer = Multiplayer.CreateNamedWriter("CustomCommand");
         writer.Put("ceiling_gun");
+        writer.Put(syncId);
         writer.Put((Vector2)ct.transform.position);
         writer.Put(angle);
+        writer.Put(seeing);
+        writer.Put(timeSaw);
         writer.Put(fired);
+        if (fired) {
+            writer.Put(shotPos);
+            writer.Put(shotDir);
+        }
         Net.Server_SendToClients(fired ? DeliveryMethod.ReliableUnordered : DeliveryMethod.Unreliable, writer, ServerMain.AllClientIdsExceptHost);
     }
 
-    public static void ApplyRemote(Vector2 pos, float angle, bool fired) {
-        CeilingTurret ct = FindNear(pos);
-        if (ct == null) {
+    public static void ApplyRemote(ushort syncId, Vector2 pos, float angle, bool seeing, float timeSaw, bool fired, Vector2 shotPos, Vector2 shotDir) {
+        CeilingTurret ct = FindById(syncId) ?? FindNear(pos);
+        if (ct != null) {
+            Pose(ct, angle);
+            CeilingTurretClient clientState = ct.GetComponent<CeilingTurretClient>();
+            if (clientState == null) {
+                clientState = ct.gameObject.AddComponent<CeilingTurretClient>();
+            }
+            clientState.Seeing = seeing;
+            clientState.TimeSaw = timeSaw;
+            if (fired) {
+                Traverse.Create(ct).Field("timeSinceShot").SetValue(0f);
+                if (ct.lowerGun != null && ct.barrelAnimCurve != null) {
+                    ct.lowerGun.localPosition = new Vector2(0f, ct.barrelAnimCurve.Evaluate(0f));
+                }
+            }
+        }
+        if (!fired) {
             return;
         }
-        Pose(ct, angle);
-        if (!fired || ct.lowerGun == null) {
-            return;
+        if (shotDir.sqrMagnitude < 0.01f) {
+            shotDir = Vector2.down;
         }
-        Traverse.Create(ct).Field("timeSinceShot").SetValue(0f);
-        if (ct.barrelAnimCurve != null) {
-            ct.lowerGun.localPosition = new Vector2(0f, ct.barrelAnimCurve.Evaluate(0f));
-        }
-        Sound.Play("rifleshot", ct.lowerGun.position, true, false, null, 1f, 1f, false, false);
+        Sound.Play("rifleshot", shotPos, true, false, null, 1f, 1f, false, false);
         if (WorldGeneration.world != null && WorldGeneration.world.biomeDepth == 11 && PlayerCamera.main != null) {
             PlayerCamera.main.threatMusicTime = 2f;
         }
         TurretScript_Shoot_MultiplayerPatch.SuppressBodyDamage = true;
         try {
             TurretScript.Shoot(new FireInfo {
-                pos = ct.lowerGun.position,
-                dir = -ct.lowerGun.up,
-                ignoreTrans = ct.transform,
+                pos = shotPos,
+                dir = shotDir,
+                ignoreTrans = ct != null ? ct.transform : null,
                 playerDamageMultiplier = 1f,
             });
         } finally {
@@ -738,17 +1031,41 @@ internal static class CeilingTurretHostSim {
     }
 
     internal static void ClientBarrel(CeilingTurret ct) {
-        if (ct == null || ct.lowerGun == null || ct.barrelAnimCurve == null) {
+        if (ct == null) {
             return;
         }
-        Traverse tr = Traverse.Create(ct);
-        float t = tr.Field("timeSinceShot").GetValue<float>() + Time.deltaTime;
-        tr.Field("timeSinceShot").SetValue(t);
-        ct.lowerGun.localPosition = new Vector2(0f, ct.barrelAnimCurve.Evaluate(t));
+        CeilingTurretClient clientState = ct.GetComponent<CeilingTurretClient>();
+        float timeSaw = clientState != null ? clientState.TimeSaw : 0f;
+        bool seeing = clientState != null && clientState.Seeing;
+        if (ct.upperGun != null) {
+            float angle = Traverse.Create(ct).Field("gunAngle").GetValue<float>();
+            ct.upperGun.eulerAngles = new Vector3(0f, 0f, angle);
+            ct.upperGun.localPosition = ct.upperGun.up * -0.75f;
+        }
+        if (ct.lowerGun != null && ct.barrelAnimCurve != null) {
+            Traverse tr = Traverse.Create(ct);
+            float t = tr.Field("timeSinceShot").GetValue<float>() + Time.deltaTime;
+            tr.Field("timeSinceShot").SetValue(t);
+            ct.lowerGun.localPosition = new Vector2(0f, ct.barrelAnimCurve.Evaluate(t));
+        }
+        if (ct.alwaysSee && ct.openLight != null) {
+            ct.openLight.intensity = Mathf.PingPong(Time.time * 10f, 1f) * timeSaw * 5f;
+        }
+        if (ct.lights != null) {
+            ct.lights.enabled = seeing || Mathf.PingPong(Time.time, 0.2f) > 0.1f;
+        }
+        AudioSource source = Traverse.Create(ct).Field("source").GetValue<AudioSource>();
+        if (source != null) {
+            source.volume = Mathf.MoveTowards(source.volume, seeing ? 1f : 0f, Time.deltaTime * 3f);
+            if (source.volume > 0f && !source.isPlaying) {
+                source.Play();
+            }
+            if (source.volume <= 0f && source.isPlaying) {
+                source.Stop();
+            }
+            source.pitch = 0.5f + timeSaw * 1.5f;
+        }
     }
-
-    static CeilingTurret[] _cached;
-    static int _cachedFrame = -1;
 
     static CeilingTurret FindNear(Vector2 pos) {
         if (_cached == null || Time.frameCount - _cachedFrame > 45) {
@@ -756,7 +1073,7 @@ internal static class CeilingTurretHostSim {
             _cachedFrame = Time.frameCount;
         }
         CeilingTurret best = null;
-        float bestSqr = 4f;
+        float bestSqr = 64f;
         for (int i = 0; i < _cached.Length; i++) {
             CeilingTurret ct = _cached[i];
             if (ct == null) {
@@ -771,13 +1088,33 @@ internal static class CeilingTurretHostSim {
         return best;
     }
 
+    static CeilingTurret FindById(ushort syncId) {
+        if (syncId == 0 || !NetObjectRegistry.TryGetSyncInfo(syncId, out SyncInfo si) || si == null || si.go == null) {
+            return null;
+        }
+        CeilingTurret ct = si.go.GetComponent<CeilingTurret>();
+        if (ct == null) {
+            ct = si.go.GetComponentInChildren<CeilingTurret>(includeInactive: true);
+        }
+        return ct;
+    }
+
     [CTPostInit]
     static void InitGuns() {
         ClientMain.ClientCustomCommandsDict["ceiling_gun"] = (cmd, reader) => {
+            reader.Get(out ushort syncId);
             reader.Get(out Vector2 pos);
             reader.Get(out float angle);
+            reader.Get(out bool seeing);
+            reader.Get(out float timeSaw);
             reader.Get(out bool fired);
-            ApplyRemote(pos, angle, fired);
+            Vector2 shotPos = pos;
+            Vector2 shotDir = Vector2.down;
+            if (fired) {
+                reader.Get(out shotPos);
+                reader.Get(out shotDir);
+            }
+            ApplyRemote(syncId, pos, angle, seeing, timeSaw, fired, shotPos, shotDir);
         };
     }
 
@@ -791,7 +1128,7 @@ internal static class CeilingTurretHostSim {
                 continue;
             }
             Body body = plr.body;
-            if (body.transform.position.y >= ct.transform.position.y) {
+            if (body.transform.position.y >= ct.transform.position.y || (!ct.alwaysSee && !MovingFast(body))) {
                 continue;
             }
             bool clear = true;
@@ -814,6 +1151,30 @@ internal static class CeilingTurretHostSim {
         }
         seeing = best != null;
         return best;
+    }
+
+    static bool MovingFast(Body body) {
+        if (body == null) {
+            return false;
+        }
+        int id = body.GetInstanceID();
+        Vector2 pos = body.transform.position;
+        float now = Time.time;
+        if (body.grounded && body.moveDir.sqrMagnitude < 0.04f) {
+            _moveSample[id] = new MoveSample { Pos = pos, Time = now, Fast = false };
+            return false;
+        }
+        if (!_moveSample.TryGetValue(id, out MoveSample prev)) {
+            _moveSample[id] = new MoveSample { Pos = pos, Time = now, Fast = false };
+            return false;
+        }
+        float dt = now - prev.Time;
+        if (dt < 0.25f) {
+            return prev.Fast;
+        }
+        bool fast = (pos - prev.Pos).magnitude > 15f * dt;
+        _moveSample[id] = new MoveSample { Pos = pos, Time = now, Fast = fast };
+        return fast;
     }
 }
 

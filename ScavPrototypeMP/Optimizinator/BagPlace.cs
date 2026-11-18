@@ -81,6 +81,8 @@ internal static class BagPlace
 	// host walks stored parents. a client retries bag parenting and any announce still waiting.
 	internal static void Tick()
 	{
+		if (!Net.IsRunning)
+			return;
 		if (Net.IsServer)
 		{
 			Sweep();
@@ -124,7 +126,7 @@ internal static class BagPlace
 	internal static bool BeforeAnnounce(SyncInfo si)
 	{
 		_blocked = false;
-		if (si == null || Net.IsServer)
+		if (!Net.IsRunning || si == null || Net.IsServer)
 			return true;
 		Item item = ItemOf(si);
 		Transform parent = item != null && item.transform != null ? item.transform.parent : null;
@@ -436,7 +438,7 @@ internal static class BagPlace
 	// host. register the item and the bag, then store the live parent. client NewGO deletes an unregistered object, so this does not run there.
 	private static void Publish(Item item, GameObject box)
 	{
-		if (!Net.IsServer || item == null)
+		if (!Net.IsRunning || !Net.IsServer || item == null)
 			return;
 		if (ItemSync.SuppressContainerWrite > 0) {
 			if (ItemSync.ParentTestSwap)
@@ -474,7 +476,7 @@ internal static class BagPlace
 	// host registers an object the spatial pass has not found. already registered objects are left alone.
 	private static void Ensure(GameObject go)
 	{
-		if (go == null || !Net.IsServer)
+		if (!Net.IsRunning || go == null || !Net.IsServer)
 			return;
 		if (NetObjectRegistry.IsRegistered(go) || !NetObjectRegistry.ObjectShouldBeSynced(go))
 			return;

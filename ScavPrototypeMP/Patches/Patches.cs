@@ -31,12 +31,18 @@ namespace Together;
 [HarmonyPatch(typeof(RadiationLine), nameof(RadiationLine.Activate))]
 static class RadiationLine_Activate_MultiplayerPatch {
     static bool Prefix(RadiationLine __instance) {
+        if (!Net.IsRunning) {
+            return true;
+        }
         return __instance.timeGone != -10;
     }
 }
 [HarmonyPatch(typeof(RadiationLine), nameof(RadiationLine.Deactivate))]
 static class RadiationLine_Deactivate_MultiplayerPatch {
     public static void Postfix(RadiationLine __instance) {
+        if (!Net.IsRunning) {
+            return;
+        }
         RadiationLine_Update_MultiplayerPatch.timeGone = 0;
     }
 }
@@ -134,6 +140,9 @@ public static class RadiationLine_Update_MultiplayerPatch {
 [HarmonyPatch(typeof(OnLimbWound), nameof(OnLimbWound.Update))]
 static class OnLimbWound_Update_MultiplayerPatch {
     static bool Prefix(OnLimbWound __instance) {
+        if (!Net.IsRunning) {
+            return true;
+        }
         if (__instance.limb == null || __instance.cond(__instance.limb)) {
             OnLimbWound.Destroy(__instance.gameObject);
         }
@@ -249,6 +258,9 @@ public static class Vomiter_Vomit_MultiplayerPatch {
 [HarmonyPatch(typeof(Body), nameof(Body.Eat), new[] { typeof(float), typeof(float) })]
 static class Body_Eat_MultiplayerPatch {
     static void Prefix(Body __instance) {
+        if (!Net.IsRunning) {
+            return;
+        }
         if (__instance.IsBodyLocal() && __instance.TryGetNetBody(out var nb)) {
             nb.SetNetHealthSyncIgnoreTime();
         }
@@ -260,6 +272,9 @@ static class Body_Eat_MultiplayerPatch {
 [HarmonyPatch(typeof(Body), nameof(Body.Eat), new[] { typeof(float), typeof(float), typeof(int) })]
 static class Body_Eat_FoodType_MultiplayerPatch {
     static void Prefix(Body __instance) {
+        if (!Net.IsRunning) {
+            return;
+        }
         CharacterSpawn.EnsureBodySpecies(__instance);
         if (__instance.IsBodyLocal() && __instance.TryGetNetBody(out NetBody nb)) {
             nb.SetNetHealthSyncIgnoreTime();
@@ -270,6 +285,9 @@ static class Body_Eat_FoodType_MultiplayerPatch {
 [HarmonyPatch(typeof(Body), nameof(Body.Drink))]
 static class Body_Drink_MultiplayerPatch {
     static void Prefix(Body __instance) {
+        if (!Net.IsRunning) {
+            return;
+        }
         if (__instance.IsBodyLocal() && __instance.TryGetNetBody(out var nb)) {
             nb.SetNetHealthSyncIgnoreTime();
         }
@@ -286,6 +304,9 @@ public static class Body_StartClimbing_MultiplayerPatch {
     public static Climbable last_interacted_climbable = null;
     public static Body last_interacted_body = null;
     static void Prefix(Body __instance, Climbable climbable) {
+        if (!Net.IsRunning) {
+            return;
+        }
         last_interacted_climbable = climbable;
         last_interacted_body = __instance;
     }
@@ -379,6 +400,9 @@ static class Body_HasWearable_Id_MultiplayerPatch {
 [HarmonyPatch(typeof(Body), nameof(Body.OnCollisionEnter2D))]
 public static class Body_OnCollisionEnter2D_MultiplayerPatch {
     public static bool Prefix(Body __instance, Collision2D collision) {
+        if (!Net.IsRunning) {
+            return true;
+        }
         var body = __instance;
         if (!Util.IsBodyLocal(body)) { // dont shake the camera, do only visual body stuff
 
@@ -600,12 +624,18 @@ public static class DrillPod_Update_MultiplayerPatch {
 public static class Body_HandleVisuals_MultiplayerPatch {
     static void Prefix(Body __instance, Painkillers pnk, ref bool __state) {
         __state = __instance.inWater;
+        if (!Net.IsRunning) {
+            return;
+        }
         if (!Util.IsBodyLocal(__instance)) {// patch the SetDroplets, so that remote peers dont create phantom water overlay
             __instance.inWater = false;
             __instance.lastLiquidColor = Color.clear;
         }
     }
     static void Postfix(Body __instance, ref bool __state) {
+        if (!Net.IsRunning) {
+            return;
+        }
         __instance.inWater = __state;
         // ragdoll (!standing) clears ExperimentSit here - milky riders reassert sit; others stay cleared
         NetBody.ApplyPiggybackCarryPose(__instance);
@@ -941,6 +971,9 @@ public static class Body_Start_MultiplayerPatch {
     }
 #endif 
     static void Postfix(Body __instance) {
+        if (!Net.IsRunning) {
+            return;
+        }
         var pb = __instance.GetComponent<NetBody>();
         string pid = "NULL";
 
@@ -1077,6 +1110,10 @@ static class ShuttleStartOpen_Start_MultiplayerPatch {
 static class ShuttleStartOpen_Update_MultiplayerPatch {
     static float timer = 0;
     static void Postfix(ShuttleStartOpen __instance) {
+        if (!Net.IsRunning) {
+            timer = 0;
+            return;
+        }
         if (Util.IsWorldGenerated() && Util.TryGetLocalBody(out var b)) {
             if (!KM.DistanceCheck(__instance.transform.position, b.transform.position, 12)) {
 

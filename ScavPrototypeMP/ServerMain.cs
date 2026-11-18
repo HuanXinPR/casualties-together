@@ -795,6 +795,9 @@ public class ServerMain : MonoBehaviour {
 #if FULLGAME
         return FullgameWorldCompat.IsAtLayerExit(body);
 #else
+        if (body == null || WorldGeneration.world == null) {
+            return false;
+        }
         // OG: WorldGeneration.ContinueRun
         if ((body.transform.position.y < (float)(0L - (long)WorldGeneration.world.halfHeight) + 3.1f)) {
             return true;
@@ -802,6 +805,26 @@ public class ServerMain : MonoBehaviour {
 
         return false;
 #endif
+    }
+
+    public static bool HostBodyIsDead() {
+        if (!Net.IsRunning || Net.IsDedicatedServer) {
+            return false;
+        }
+        foreach (ScavPlayer plr in ScavPlayer.AllPlayers) {
+            if (plr != null && plr.IsHost) {
+                return !plr.IsAlive();
+            }
+        }
+        return false;
+    }
+
+    public static bool LocalPlayerAtLayerExit() {
+        PlayerCamera cam = PlayerCamera.main;
+        if (cam == null || cam.body == null || !cam.body.alive) {
+            return false;
+        }
+        return DidHeFinishTheLayer(cam.body);
     }
     public static bool CheckIfEveryoneIsSleeping() {
         bool any = false;
@@ -1134,6 +1157,7 @@ public class ServerMain : MonoBehaviour {
         };
 
         Multiplayer.RegisterCustomServerReceiver("CustomCommand", RunClientCustomCommand);
+        LayerExitWhenHostDead.Register();
 
         {
             var t = "plrdeath";

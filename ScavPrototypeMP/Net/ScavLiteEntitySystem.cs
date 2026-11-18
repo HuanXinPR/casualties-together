@@ -163,6 +163,7 @@ namespace Together {
         private SyncVar<Vector2> _targetLookPos;
         private SyncVar<bool> _isRight;
         private SyncVar<bool> _crouching;
+        private SyncVar<bool> _offHand;
 
         internal SyncVar<bool> _standing;
         internal SyncVar<bool> _isPiggyback;
@@ -741,6 +742,7 @@ namespace Together {
             _targetLookPos.Value = nb.body.targetLookPos;
             _isRight.Value = nb.body.isRight;
             _crouching.Value = nb.body.crouching;
+            _offHand.Value = nb.body.handSlot != 0;
             _standing.Value = nb.body.standing;
             // 仅在角色非站立（布娃娃倒地）且未被背负时写入 15 肢体 × 4 个 SyncGroup3 字段，省去站立态每 Tick 60 次跨层物理属性读取与标脏
             if (nb?.body != null && !nb.body.standing && !nb.IsPiggybacking()) {
@@ -765,6 +767,7 @@ namespace Together {
             body.targetLookPos = _targetLookPos.InterpolatedValue;
             body.moveDir = (Vector2)_moveDir.Value;
             body.crouching = _crouching.Value;
+            body.handSlot = _offHand.Value ? 1 : 0;
 
 
             if (_isPiggyback.Value) {
@@ -1087,6 +1090,9 @@ namespace Together {
             }
 
             if (go == null) {
+                if (!Net.IsServer && TrapClaim.GlassBlocked(Id)) {
+                    return false;
+                }
                 if (!Util.IsWorldInstantiated() || String.IsNullOrEmpty(resourceId.Value)) {
                     return false;
                 }
@@ -1895,6 +1901,8 @@ namespace Together {
 #if FULLGAME
                 } else if (b.TryGetComponent(out LaserDroneScript cryoDrone)) {
                     specialdata1.Value = cryoDrone.open.ToByte();
+                } else if (b.TryGetComponent(out FanTrap fanTrap)) {
+                    FanTrapSync.Write(fanTrap, this);
 #endif
                 } else {
                     if (go.transform.childCount == 1 && go.transform.GetChild(0) is var e && e != null && e.TryGetComponent(out GeyserScript geyser)) {
@@ -2591,6 +2599,8 @@ namespace Together {
 #if FULLGAME
             } else if (b.TryGetComponent(out LaserDroneScript cryoDrone)) {
                 TrapClaim.ClientCryoFollowHost(cryoDrone);
+            } else if (b.TryGetComponent(out FanTrap fanTrap)) {
+                FanTrapSync.Apply(fanTrap, specialdata1.Value, specialdata2.Value);
 #endif
             } else {
                 if (go.transform.childCount == 1 && go.transform.GetChild(0) is var e && e != null && e.TryGetComponent(out GeyserScript geyser)) {

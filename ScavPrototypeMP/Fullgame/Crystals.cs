@@ -2219,6 +2219,7 @@ static class CrystalEnemy_Lunge_VictimAuth_MultiplayerPatch {
         }
 
         bool hitSomeone = false;
+        knetid victim = default;
         RaycastHit2D[] hits = Physics2D.RaycastAll(__instance.transform.position, __instance.transform.up);
         for (int i = 0; i < hits.Length; i++) {
             RaycastHit2D hit = hits[i];
@@ -2227,6 +2228,9 @@ static class CrystalEnemy_Lunge_VictimAuth_MultiplayerPatch {
             }
             if (Utils.GetBody(hit.transform.gameObject, out Body body) && !hitSomeone) {
                 hitSomeone = true;
+                if (body.TryGetNetBody(out NetBody nb)) {
+                    victim = nb.netId;
+                }
                 if (TrapClaim.ManifestMayHurt(__instance, body)) {
                     TrapClaim.ManifestHurtLocal(__instance, body);
                 }
@@ -2243,7 +2247,7 @@ static class CrystalEnemy_Lunge_VictimAuth_MultiplayerPatch {
             }
         }
 
-        TrapClaim.HostManifestLunged(__instance);
+        TrapClaim.HostManifestLunged(__instance, victim);
         return false;
     }
 }

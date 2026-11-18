@@ -1379,7 +1379,11 @@ namespace Together {
     [HarmonyPatch(typeof(ManualDefibMinigame), nameof(ManualDefibMinigame.GetEstimationRange))]
     static class ManualDefibMinigame_GetEstimationRange_MultiplayerPatch {
         static bool Prefix(ManualDefibMinigame __instance, ref float __result) { //rewrite 
-            float num = 70f - Util.GetLocalBody().skills.INTFrom10 * 5f;
+            if (!Net.IsRunning) {
+                return true;
+            }
+            Body localBody = Util.GetLocalBodyNullable();
+            float num = localBody != null ? (70f - localBody.skills.INTFrom10 * 5f) : 70f;
             if (num < 5f) {
                 num = 5f;
             }
@@ -1391,11 +1395,11 @@ namespace Together {
 
 
 
-    // remove the megalovania explosion
+    // remove the megalovania explosion in MP; keep vanilla behaviour in singleplayer
     [HarmonyPatch(typeof(KeypadMinigame), nameof(KeypadMinigame.CheckForMegalovania))]
     static class abc {
         static bool Prefix(KeypadMinigame __instance) {
-            return false;
+            return !Net.IsRunning;
         }
     }
 

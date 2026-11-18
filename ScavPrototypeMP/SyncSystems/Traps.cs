@@ -1044,7 +1044,13 @@ public class ScavTraps : CasualtiesTogetherSingleton {
     // called only from transpiled section
     // return false to continue original function
     public static bool DamagingCrate_OnCollisionEnter2D_StolenWithFirstCheck(object ddddddddd, Limb limb, Vector2 prevFrameSpeed) {
+        if (!Net.IsRunning) {
+            return false;
+        }
         var dmgcrate = ddddddddd as DamagingCrate;
+        if (dmgcrate == null || limb == null) {
+            return true;
+        }
 
 
         var islocal = Util.IsBodyLocal(limb.body);

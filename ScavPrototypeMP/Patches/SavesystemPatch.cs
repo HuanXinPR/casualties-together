@@ -20,6 +20,11 @@ public static class SaveSystem_HasSave_MultiplayerPatch {
 
     internal static bool force = false;
     private static bool Prefix(ref bool __result) {
+        if (!Net.IsRunning && !force) {
+            SavesystemPatch.PreserveSave = false;
+            SavesystemPatch.savedatapathreplacement = Application.persistentDataPath;
+            return true;
+        }
         if (force) {
             __result = true;
             force = false;
@@ -72,6 +77,11 @@ public static class SaveSystem_SaveGame_MultiplayerPatch {
 
     static bool Prefix() {
         wrote = false;
+        if (!Net.IsRunning && !force) {
+            SavesystemPatch.PreserveSave = false;
+            SavesystemPatch.savedatapathreplacement = Application.persistentDataPath;
+            return true;
+        }
         // a practice world must not overwrite the real mp_save. saveandquit still returns to the menu.
         if (SavesystemPatch.PreserveSave && !force)
             return false;
@@ -247,6 +257,12 @@ public static class SaveSystem_LoadGame_MultiplayerPatch {
 
     static bool Prefix(ref bool __state) {
         deleteVanillaAfter = false;
+        if (!Net.IsRunning && !force) {
+            SavesystemPatch.PreserveSave = false;
+            SavesystemPatch.savedatapathreplacement = Application.persistentDataPath;
+            __state = SaveSystem.loadedRun;
+            return true;
+        }
         // map debug and the tutorial leave the files on disk and start from an empty body.
         if (SavesystemPatch.PreserveSave && !force) {
             __state = false;
@@ -288,6 +304,9 @@ public static class SaveSystem_LoadGame_MultiplayerPatch {
         return true;
     }
     static void Postfix(ref bool __state) {
+        if (!Net.IsRunning && !force) {
+            return;
+        }
         // the per-player load. the lobby walk calls back in with force set, and this is the pass that applied the body.
         if (force)
             PlayerCheckpoint.ReadCrafted(SavesystemPatch.savedatapathreplacement);
@@ -605,6 +624,9 @@ public static class SavesystemPatch {
     }
 
     public static string ReplacementFor_Application_persistentDataPath() {
+        if (!Net.IsRunning) {
+            return Application.persistentDataPath;
+        }
         return savedatapathreplacement;
     }
 
@@ -689,12 +711,21 @@ public static class SavesystemPatch {
         return instructions;
     }
 
+    internal static void DeleteSaveIfSingleplayer(string path) {
+        if (!Net.IsRunning && !string.IsNullOrEmpty(path) && File.Exists(path)) {
+            File.Delete(path);
+        }
+    }
+
     internal static IEnumerable<CodeInstruction> StripSaveDelete(IEnumerable<CodeInstruction> instructions) {
         var delete = AccessTools.Method(typeof(File), nameof(File.Delete), new Type[] { typeof(string) });
+        var gatedDelete = AccessTools.Method(typeof(SavesystemPatch), nameof(DeleteSaveIfSingleplayer));
         var codes = new List<CodeInstruction>(instructions);
         for (int i = 0; i < codes.Count; i++) {
-            if (delete != null && codes[i].Calls(delete))
-                codes[i] = new CodeInstruction(OpCodes.Pop);
+            if (delete != null && codes[i].Calls(delete)) {
+                codes[i].opcode = OpCodes.Call;
+                codes[i].operand = gatedDelete;
+            }
         }
         return codes;
     }
