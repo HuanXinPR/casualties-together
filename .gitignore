@@ -42,6 +42,8 @@ scripts/__pycache__/
 **/__pycache__/
 *.pyc
 ScavPrototypeMP/Optimizinator/Evidence/archived/
+docs/
+.history
 
 # Build artis
 CasualtiesTogether.Local.props
