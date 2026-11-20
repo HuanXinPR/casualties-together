@@ -455,7 +455,7 @@ namespace Together {
 
         public GameObject chara => body.transform.parent.gameObject;
         public Body body;
-        public NetBody netBody => body.GetComponent<NetBody>();
+        public NetBody netBody => body != null ? body.GetNetBody() : null;
         public bool TryGetNetBody(out NetBody pb) {
             if (this == null) {
                 pb = null;
