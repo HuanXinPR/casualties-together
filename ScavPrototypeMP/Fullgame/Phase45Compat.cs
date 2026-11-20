@@ -4,6 +4,7 @@ using HarmonyLib;
 using LiteNetLib;
 using LiteNetLib.Utils;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
@@ -1239,10 +1240,24 @@ static class Limb_AttachProsthetic_HealthPush_MultiplayerPatch {
     }
 }
 
-// movement course is SP tutorial content - don't run the parkour controller in a lobby
-[HarmonyPatch(typeof(MovementCourse), "Start")]
+/// <summary>
+/// 联机大厅下屏蔽单人跑酷教程控制器协程。
+/// Fullgame v1.0.2 已将入口从 <c>Start</c> 迁移为 <see cref="MovementCourse.Sequence"/>；
+/// 拦截返回 <see cref="IEnumerator"/> 的协程方法时必须填充非空空枚举器，防止宿主 <c>StartCoroutine(null)</c> 抛出异常。
+/// </summary>
+[HarmonyPatch(typeof(MovementCourse), nameof(MovementCourse.Sequence))]
 static class MovementCourse_Start_MultiplayerPatch {
-    static bool Prefix() => !Net.IsRunning;
+    private static IEnumerator EmptyCoroutine() {
+        yield break;
+    }
+
+    static bool Prefix(ref IEnumerator __result) {
+        if (!Net.IsRunning) {
+            return true;
+        }
+        __result = EmptyCoroutine();
+        return false;
+    }
 }
 
 #endif

@@ -235,7 +235,7 @@ namespace Together {
                 AppendNonAsciiPathHintIfNeeded();
             }
 
-            // Issue #16 兜底防线：只要存在 Harmony 补丁失败或阶段初始化未完成，确保挂载 LoadErrorNotifier 显露启动错误提示
+            // Issue #16 兜底防线：若触发 Harmony 致命补丁熔断或阶段初始化未完成，确保挂载 LoadErrorNotifier 显露启动错误提示
             if (_harmonyPatchFailed || (!SUCCESFULLY_INITIALIZED && !string.IsNullOrWhiteSpace(LoadErrorNotifier.errorstr))) {
                 this.GetOrAddComponent<LoadErrorNotifier>();
                 Application.runInBackground = false;
@@ -390,7 +390,9 @@ namespace Together {
         }
 
         /// <summary>
-        /// 逐类应用 Harmony 补丁并汇总失败详情（修复上游 Issue #16：禁止静默吞掉补丁异常导致非 ASCII 游戏路径提示被遮蔽）。
+        /// 逐类应用 Harmony 补丁并按致命阈值分级处置：
+        /// 非 ASCII 游戏路径下的补丁异常（Issue #16 典型症状）或大面积补丁崩溃（&gt;= 10 组）触发熔断并挂载 <see cref="LoadErrorNotifier"/>；
+        /// 纯 ASCII 路径下的极个别非致命兼容补丁失配仅记录详细错误日志，不阻断模组主流程初始化。
         /// </summary>
         void DoHarmonyPatchAll(Harmony harmony) {
             _harmonyPatchFailed = false;
@@ -414,11 +416,18 @@ namespace Together {
             }
 
             if (failedCount > 0) {
-                _harmonyPatchFailed = true;
                 string summary = $"Harmony failed to apply {failedCount}/{patchTypes.Count} patch group(s). First failure in {firstFailedType?.FullName}:\n{firstException}";
-                Together.log.error($"Plugin {MyPluginInfo.PLUGIN_GUID} {Plugin.FULL_MOD_VERSION} failed to load! Make sure you have correct version!\n\n{summary}\n");
-                LoadErrorNotifier.errorstr += "\n" + summary;
-                AppendNonAsciiPathHintIfNeeded();
+                bool hasNonAsciiExePath = !string.IsNullOrEmpty(BepInEx.Paths.ExecutablePath) && BepInEx.Paths.ExecutablePath.Any(c => c > 127);
+                if (hasNonAsciiExePath || failedCount >= 10) {
+                    _harmonyPatchFailed = true;
+                    Together.log.error($"Plugin {MyPluginInfo.PLUGIN_GUID} {Plugin.FULL_MOD_VERSION} failed to load! Make sure you have correct version!\n\n{summary}\n");
+                    LoadErrorNotifier.errorstr += "\n" + summary;
+                    AppendNonAsciiPathHintIfNeeded();
+                } else {
+                    log.LogError($"[Harmony] {summary} (non-fatal under ASCII path; continuing mod initialization)");
+                }
+            } else {
+                log.LogInfo($"Harmony successfully applied {patchTypes.Count}/{patchTypes.Count} patch group(s).");
             }
         }
         public static List<Type> GetHarmonyPatchesInNamespaces(params string[] namespaces) {
@@ -659,7 +668,7 @@ namespace Together {
 
                     arg = args[i];
 
-                    UIMainMenu.USERINPUT_NAME = Multiplayer.SanitizeTextInput(arg);
+                    UIMainMenu.USERINPUT_NAME = Multiplayer.SanitizeUnicodeTextInput(arg);
                     plrname_override = true;
                     log.LogInfo($"CMD: set name to: {UIMainMenu.USERINPUT_NAME}");
                 }

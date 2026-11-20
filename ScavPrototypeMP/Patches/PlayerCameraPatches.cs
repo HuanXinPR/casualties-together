@@ -1425,10 +1425,15 @@ public static class PlayerCamera_SetIrradiateIntensity_MultiplayerPatch {
     }
 }
 
-internal static class UnconsciousTimeScaleGate {
-    internal static void SetTimeScaleIfSingleplayer(PlayerCamera cam, PlayerCamera.SpeedType speed) {
+/// <summary>
+/// 昏迷界面的单机时间缩放门控桥接器。
+/// 必须声明为 <c>public</c>（避免 Harmony 为 <see cref="PlayerCamera.HandleUnconsciousScreen"/> 生成跨程序集 DMD 时触发 Unity Mono JIT <see cref="InvalidProgramException"/>），
+/// 且参数列表必须与原方法 <c>PlayerCamera.SetTimeScale(SpeedType, bool, bool)</c> 完全一致以维持 IL 求值栈平衡。
+/// </summary>
+public static class UnconsciousTimeScaleGate {
+    public static void SetTimeScaleIfSingleplayer(PlayerCamera cam, PlayerCamera.SpeedType speed, bool switchSound, bool force) {
         if (!Net.IsRunning && cam != null) {
-            cam.SetTimeScale(speed);
+            cam.SetTimeScale(speed, switchSound, force);
         }
     }
 }
