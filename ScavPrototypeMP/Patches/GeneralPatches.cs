@@ -43,11 +43,13 @@ static class PauseHandler_Update_MultiplayerPatch {
 [HarmonyPatch(typeof(Locale), nameof(Locale.LoadLanguage))]
 static class Locale_LoadLanguage_MultiplayerPatch {
     static void Postfix() {
+        if (Locale.currentLang?.other == null)
+            return;
         // make the local text for keybinds work
         foreach (var keybind_label in Lang.EN.Where(x => x.Key.StartsWith("gameset_"))) {
             var key = "gameset" + keybind_label.Key.TrimStart("gameset_");
             if (!Locale.currentLang.other.ContainsKey(key)) {
-                Locale.currentLang.other[key] = keybind_label.Value;
+                Locale.currentLang.other[key] = Lang.Get(keybind_label.Key);
             }
         }
     }
@@ -464,8 +466,10 @@ static class Sound_Play_MultiplayerPatch {
             // bounceShroom limb path is vanilla-2D; in MP every peer simulates the trigger so it was global
             twoDimensional = false;
         } else if (clip == "crystalenemywindup" || clip == "crystalenemylodge" || clip == "crystalenemylaugh") {
-            // manifestation (crystalenemy) AI uses vanilla-2D stings; every peer in sim range runs Update/Lunge.
-            // keep 2D only for the local crystal-trigger feedback path (metamorphic etc.).
+            // 水晶怪仅在房主端运行 Update 与 Lunge，需由房主将蓄力与穿刺音效转发给其余客户端（笑声另有单独同步通道）
+            if (Net.IsServer && clip != "crystalenemylaugh") {
+                ServerMain.Server_AnnounceSound(pos, clip, ServerMain.AllClientIdsExceptHost);
+            }
             if (!CrystalLocalFx.IsLocalTrigger()) {
                 twoDimensional = false;
             }

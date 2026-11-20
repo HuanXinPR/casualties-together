@@ -430,23 +430,43 @@ namespace Together {
 
         }
         bool _RagdollReadIndividualLimb(Limb limb, ref SyncVar<Vector2_4byte_512> syncpos, ref SyncVar<FloatAngle> syncrot, ref SyncVar<Vector2_4byte_200> syncvel, ref SyncVar<short> syncangvel) {
-            Vector2_4byte_512 limb_rb_position = syncpos.InterpolatedValue;
-            if (!limb.dismembered) {
-                if (Net.IsServer) {
-                    if ((Vector2.SqrMagnitude(limb_rb_position - nb.GetPosition()) < 100)) {
-                    } else {
-#if !RELEASE
-                        log.sus($"{DebugHelp.GetPlayerFullDebugString(nb.body)} something is sus about {DebugHelp.GetGameObjectFullDebugString(limb)} ");
-#endif
-                        return false;
-                    }
-                }
-                limb.transform.position = limb_rb_position;
-                limb.rb.rotation = syncrot.InterpolatedValue;
-                limb.rb.velocity = syncvel.InterpolatedValue;
-                limb.rb.angularVelocity = Util_MPExtensions.UnquantizeFloatFromShort(syncangvel.InterpolatedValue, _RAGDOLL_ANGVEL_QUANTIZE);
+            if (limb == null || limb.dismembered || limb.rb == null) {
+                return true;
             }
+            // Group3 刚启用时插值器初值为 0，直接读最新快照避免短暂摔倒在插值追近前已结束导致姿态丢失
+            Vector2 at = syncpos.Value;
+            Vector2 root = nb.body.transform.position;
+            if ((at - root).sqrMagnitude > 400f)
+                return true;
+            // 远端肢体置为运动学快照受控态，防止本地物理求解器与报文姿态互相拉扯
+            Rigidbody2D rb = limb.rb;
+            if (rb.interpolation != RigidbodyInterpolation2D.None) {
+                rb.interpolation = RigidbodyInterpolation2D.None;
+            }
+            if (!rb.isKinematic) {
+                rb.velocity = Vector2.zero;
+                rb.angularVelocity = 0f;
+                rb.isKinematic = true;
+            }
+            rb.position = at;
+            rb.rotation = syncrot.Value;
             return true;
+        }
+
+        static void ReleaseRemoteLimbs(Body body) {
+            if (body == null || body.limbs == null) {
+                return;
+            }
+            Limb[] limbs = body.limbs;
+            for (int i = 0; i < limbs.Length; i++) {
+                Limb limb = limbs[i];
+                if (limb != null && limb.rb != null && limb.rb.isKinematic) {
+                    limb.rb.isKinematic = false;
+                }
+            }
+            if (body.rb != null && body.rb.isKinematic) {
+                body.rb.isKinematic = false;
+            }
         }
 
         internal void ReadRagdollData() {
@@ -814,6 +834,7 @@ namespace Together {
                         }
                         if (body.standing != _standing.Value) {
                             if (_standing.Value) {
+                                ReleaseRemoteLimbs(body);
                                 body.ForceStand(); // force Stand
                             } else {
                                 body.Ragdoll(); // ragdoll is guranteed to work
@@ -843,6 +864,7 @@ namespace Together {
 
                 } else {
                     Vector2 raw = _position.Value;
+                    ReleaseRemoteLimbs(nb.body);
                     nb.body.ForceStand();
                     nb.SetBodyPosition(raw);
                     EnemyMoveProbe.Note(this, EnemyMoveProbe.SimOut, raw);
@@ -850,11 +872,23 @@ namespace Together {
 
             }
 
-            // the ground-pose snapshot would paste the knocked-down shape back over the local hang
-            readingRagdollData = IsSyncGroupEnabled(SyncGroup.SyncGroup3) && !nb.body.standing && !nb.IsPiggybacking();
+            // 仅客户端应用 SyncGroup3 布娃娃快照（宿主本身负责物理模拟），同时冻结根刚体并暂停 Animator 防止覆盖骨骼姿态
+            readingRagdollData = !Net.IsServer && IsSyncGroupEnabled(SyncGroup.SyncGroup3) && !nb.body.standing && !nb.IsPiggybacking();
             if (readingRagdollData) {
+                Rigidbody2D rootRb = body.rb;
+                if (rootRb != null && !rootRb.isKinematic) {
+                    rootRb.velocity = Vector2.zero;
+                    rootRb.angularVelocity = 0f;
+                    rootRb.interpolation = RigidbodyInterpolation2D.None;
+                    rootRb.isKinematic = true;
+                }
                 ReadRagdollData();
             }
+            bool animate = !readingRagdollData;
+            if (body.bodyAnimator != null && body.bodyAnimator.enabled != animate)
+                body.bodyAnimator.enabled = animate;
+            if (body.armsAnimator != null && body.armsAnimator.enabled != animate)
+                body.armsAnimator.enabled = animate;
 
 
             if (!body.IsBodyLocal() && body.sleeping && body.moveDir != Vector2.zero) { // if theyre sleeping and moving, they probably woke up
@@ -939,6 +973,7 @@ namespace Together {
         float _poseToAng;
         float _poseStart;
         float _poseDur;
+        float _poseSample;
 
 
         public readonly SyncString resourceId = new();
@@ -1893,7 +1928,7 @@ namespace Together {
                 } else if (go.TryGetComponent(out GrabberPlant grabber)) {
                     // tip and the bone scale, only while a player is in this chunk. the next write after they walk in carries the host tip.
                     if (GrabberPlant_Update_MultiplayerPatch.Live(go.transform.position)) {
-                        grabberplant_tipPos.Value = grabber.tipPos;
+                        grabberplant_tipPos.Value = GrabberPlant_Update_MultiplayerPatch.Aim(grabber);
                         GrabberPlant_Update_MultiplayerPatch.WriteScale(grabber, this);
                     }
                 } else if (go.TryGetComponent(out TraderScript trader)) {
@@ -1909,8 +1944,10 @@ namespace Together {
                 } else if (b.TryGetComponent(out PistonScript piston)) {
                     specialdata1.Value = Traverse.Create(piston).Field("up").GetValue<bool>().ToByte();
                 } else if (b.TryGetComponent(out CrystalEnemy manifestation)) {
-                    // bit0 stuck - clients use host pose; lunge hits are victim-claimed
-                    specialdata1.Value = Traverse.Create(manifestation).Field("stuck").GetValue<bool>().ToByte();
+                    // bit0 同步潜伏标志 stuck，specialdata2 同步蓄力倒计时以对齐客户端嗡鸣音效
+                    Traverse manifest = Traverse.Create(manifestation);
+                    specialdata1.Value = manifest.Field("stuck").GetValue<bool>().ToByte();
+                    specialdata2.Value = manifest.Field("timeBeforeAttack").GetValue<float>();
 #if FULLGAME
                 } else if (b.TryGetComponent(out LaserDroneScript cryoDrone)) {
                     specialdata1.Value = cryoDrone.open.ToByte();
@@ -2158,7 +2195,82 @@ namespace Together {
             return false;
         }
 
+        static int _groundMask = int.MinValue;
+
+        // 远距休眠区块在宿主的采样常维持静止零速，若客户端站在散落物旁本地悬空下落，避免被每步宿主零速快照拽回单步重力
+        bool LocalOwnsLoose(bool isRigid, Rigidbody2D rb) {
+            if (!Net.IsClient || !isRigid || rb == null)
+                return false;
+            if (rb.bodyType != RigidbodyType2D.Dynamic || !rb.simulated)
+                return false;
+            if (go.transform.parent != null)
+                return false;
+            if (!SharedMain.WorldInSimRange(rb.position))
+                return false;
+            Vector2 hostVel = _velocity.Value;
+            if (hostVel.y < -0.5f || hostVel.sqrMagnitude > 4f)
+                return false;
+            Vector2 host = _position.Value;
+            Vector2 here = rb.position;
+            if (Mathf.Abs(host.x - here.x) > 0.5f)
+                return false;
+            if (host.y > here.y + 0.15f)
+                return true;
+            if (_groundMask == int.MinValue)
+                _groundMask = LayerMask.GetMask("Ground");
+            return Physics2D.Raycast(here, Vector2.down, 0.8f, _groundMask).collider == null;
+        }
+
+        // 水晶怪快照按 30 Hz 到达，客户端按实测收包间隔平滑插值渲染，消除高速突进时的跳帧阶梯感
+        internal void ClientCrystalPose() {
+            if (go == null || Net.IsServer)
+                return;
+            Vector2 raw = _position.Value;
+            float rawAng = _rotation.Value.Degrees;
+            float now = Time.time;
+            bool moved = _poseGlide
+                && ((raw - _poseTo).sqrMagnitude > 0.0004f || Mathf.Abs(Mathf.DeltaAngle(_poseToAng, rawAng)) > 0.5f);
+            if (!_poseGlide) {
+                _poseGlide = true;
+                _poseFrom = _poseTo = raw;
+                _poseFromAng = _poseToAng = rawAng;
+                _poseStart = now;
+                _poseDur = 0f;
+                _poseSample = now;
+            } else if (moved) {
+                float prevT = _poseDur > 0f ? Mathf.Clamp01((now - _poseStart) / _poseDur) : 1f;
+                _poseFrom = Vector2.Lerp(_poseFrom, _poseTo, prevT);
+                _poseFromAng = Mathf.LerpAngle(_poseFromAng, _poseToAng, prevT);
+                _poseTo = raw;
+                _poseToAng = rawAng;
+                float gap = now - _poseSample;
+                _poseSample = now;
+                if (gap < Time.deltaTime)
+                    gap = Time.deltaTime;
+                if (gap > 0.2f)
+                    gap = 0.2f;
+                if ((_poseTo - _poseFrom).sqrMagnitude > 48f * 48f) {
+                    _poseFrom = _poseTo;
+                    _poseFromAng = _poseToAng;
+                    gap = 0f;
+                }
+                _poseStart = now;
+                _poseDur = gap;
+            }
+            float t = _poseDur > 0f ? Mathf.Clamp01((now - _poseStart) / _poseDur) : 1f;
+            if (go.TryGetComponent(out Rigidbody2D rb) && rb != null) {
+                rb.interpolation = RigidbodyInterpolation2D.None;
+                rb.velocity = Vector2.zero;
+                rb.angularVelocity = 0f;
+            }
+            go.transform.SetPositionAndRotation(Vector2.Lerp(_poseFrom, _poseTo, t), Quaternion.Euler(0f, 0f, Mathf.LerpAngle(_poseFromAng, _poseToAng, t)));
+        }
+
         void ApplyTransform() {
+            if (!Net.IsServer && go != null && go.TryGetComponent(out CrystalEnemy _)) {
+                ClientCrystalPose();
+                return;
+            }
 
             Transform trans = go.transform;
             Vector2 currentPos = trans.position;
@@ -2169,6 +2281,10 @@ namespace Together {
             if (scale.x != trans.localScale.x || scale.y != trans.localScale.y) {
                 Vector3 newscale = new Vector3(scale.x, scale.y, trans.localScale.z);
                 trans.localScale = newscale;
+            }
+
+            if (LocalOwnsLoose(isRigid, rb)) {
+                return;
             }
 
             Vector2 pos;
@@ -2613,7 +2729,9 @@ namespace Together {
             } else if (b.TryGetComponent(out PistonScript piston)) {
                 // clientPistonFollowHost reads specialdata1 each Update; nothing else to apply here.
             } else if (b.TryGetComponent(out CrystalEnemy manifestation)) {
-                Traverse.Create(manifestation).Field("stuck").SetValue(specialdata1.Value != 0);
+                Traverse manifest = Traverse.Create(manifestation);
+                manifest.Field("stuck").SetValue(specialdata1.Value != 0);
+                manifest.Field("timeBeforeAttack").SetValue(specialdata2.Value);
 #if FULLGAME
             } else if (b.TryGetComponent(out LaserDroneScript cryoDrone)) {
                 TrapClaim.ClientCryoFollowHost(cryoDrone);
@@ -2799,8 +2917,11 @@ namespace Together {
                 return;
             }
             useIgnoreArmed = false;
-            int span = Mathf.Max(2, (int)(0.25f * Net.ServerEntitySendRate));
-            lastUpdateTick = (ushort)(Net.ServerTick + span);
+            int span = Mathf.Clamp((int)(0.25f * Net.ServerEntitySendRate), 2, MaxIgnoreLead);
+            ushort newTick = (ushort)(Net.ServerTick + span);
+            if (LiteEntitySystem.Utils.SequenceDiff(newTick, lastUpdateTick) > 0) {
+                lastUpdateTick = newTick;
+            }
             CombatItemUseSync.OnServerAck(syncId.id);
         }
 

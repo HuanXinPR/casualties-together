@@ -533,12 +533,12 @@ static class PlayerCamera_ToMainMenu_MultiplayerPatch {
 
         if (Net.IsClient) {
             if (!Multiplayer.showMultiplayerMenu) {
-                Multiplayer.DoMultiplayerStatusMessageLog("Disconnecting because im going to main menu on my own!");
+                Multiplayer.DoMultiplayerStatusMessageLog(Lang.Get("gotomainmenu_local"));
                 Multiplayer._JustDisconnect();
-                Chat.LogMessage(Chat.NAMELABEL_LOCALSYSTEM, "Left the server.");
+                Chat.LogMessage(Chat.NAMELABEL_LOCALSYSTEM, Lang.Get("left_server_local"));
             }
         } else {
-            Multiplayer.DoMultiplayerStatusMessageLog("Announcing GoBackToMainMenu.");
+            Multiplayer.DoMultiplayerStatusMessageLog(Lang.Get("gotomainmenu_announce"));
 
             var writer = Net.CreateWriter(NetmsgId.CLIENT_GoBackToMainMenu);
             writer.Put(0);
@@ -941,7 +941,7 @@ public static class PlayerCamera_SwitchHands_MultiplayerPatch {
     public static void Postfix() {
         if (Net.IsRunning && PlayerCamera.main?.body != null) {
             RefreshHandIcon(PlayerCamera.main);
-            Multiplayer.Client_SendSimpleMessageToServer((byte)NetmsgId.SERVER_PlayerCamera_SwitchHands, (ushort)(PlayerCamera.main.body.handSlot), false);
+            Multiplayer.Client_SendSimpleMessageToServer((byte)NetmsgId.SERVER_PlayerCamera_SwitchHands, (ushort)(PlayerCamera.main.body.handSlot), true);
             if (!Net.IsServer) {
                 ClientMain.Client_SendCharacterSyncPacket();
             }

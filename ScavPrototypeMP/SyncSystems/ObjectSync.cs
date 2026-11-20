@@ -208,6 +208,14 @@ public class SyncInfoGameObjectTracker : MonoBehaviour {
     Transform _heldParent;
     bool _held;
     bool _wasLoose;
+    int _crystal = -1;
+
+    internal bool IsCrystal() {
+        if (_crystal < 0) {
+            _crystal = GetComponent<CrystalEnemy>() != null ? 1 : 0;
+        }
+        return _crystal == 1;
+    }
 
     // parent walk is only when the parent changes. a ground item stays on the chunk stamp.
     bool HeldByBody() {
@@ -259,11 +267,24 @@ public class SyncInfoGameObjectTracker : MonoBehaviour {
 
         // clients still ease off-screen copies. the chunk stamp is the host's write.
         if (!Net.IsServer) {
+            // 水晶怪（CrystalEnemy）高速突进时必须每物理步更新姿态，跳过视野外 15 步节流防止突刺位置滞后一个区块
+            if (IsCrystal()) {
+                visualUpdateTimer = 0;
+                syncInfo.ClientFixedUpdate();
+                return;
+            }
             visualUpdateTimer++;
             if (!isVisible && visualUpdateTimer < VisualUpdateSlowerWhenNotVisible)
                 return;
             visualUpdateTimer = 0;
             syncInfo.ClientFixedUpdate();
+            return;
+        }
+
+        // 服务端每物理步写入水晶怪姿态，供实体网络 Tick 即时下发而非等待慢速区块扫描
+        if (IsCrystal()) {
+            visualUpdateTimer = 0;
+            syncInfo.WriteObjectIntoPacket();
             return;
         }
 
@@ -335,6 +356,12 @@ public class SyncInfoGameObjectTracker : MonoBehaviour {
 
 
     float distanceCheckTime = 0;
+    void LateUpdate() {
+        if (!Net.IsRunning || Net.IsServer || syncInfo == null || !IsCrystal())
+            return;
+        // 物理帧仅采样快照到达点，渲染帧间由 ClientCrystalPose 平滑插值水晶怪轨迹
+        syncInfo.ClientCrystalPose();
+    }
     void Update() {
         if (syncInfo == null) return;
 
@@ -712,6 +739,9 @@ public class NetObjectRegistry : CasualtiesTogetherSingleton {
     internal static bool ShouldKeepRegistered(GameObject obj) {
         if (obj == null)
             return false;
+        // 挂载 KeepForJoiners 的关键层建筑（如货运心脏）常驻注册表，保证中途入房客户端随基线直接接收
+        if (obj.GetComponent<KeepForJoiners>() != null)
+            return true;
         var simulationTransform = obj.transform;
         while (simulationTransform.parent != null &&
             simulationTransform.parent.TryGetComponent<Container>(out _)) {
@@ -808,6 +838,9 @@ public class NetObjectRegistry : CasualtiesTogetherSingleton {
             // the rare pass still drops far trackers, then queues dead players or the
             // living-player downward circle. SlowStamp runs one of those circles every 0.1s.
             if (do_slow_mode) {
+#if FULLGAME
+                LayerBuildingStream.HostRegister();
+#endif
 
                 { // do unregistering
                     int autounregistercount = 0;
@@ -999,9 +1032,6 @@ public class NetObjectRegistry : CasualtiesTogetherSingleton {
 
         // baked into the end lab prefab. there is no Resources entry, so a net spawn is null and the client clear deletes the real one.
         "macrofleshrebuilder",
-
-        // each machine already built this from the world. a net copy is a second gun that does not share the first.
-        "ceilingturret",
     };
 
     public static bool ObjectShouldBeSynced(GameObject obj) => !ObjectShouldNotBeSynced(obj);
@@ -1012,6 +1042,15 @@ public class NetObjectRegistry : CasualtiesTogetherSingleton {
                     return true;
                 }
                 if (obj.TryGetComponent<Climbable>(out var c)) {
+                    // spicevine / spicevineceiling 既是可攀爬植物又可被击碎，必须作为普通同步建筑处理否则破坏状态无法跨端同步
+                    bool spice = b.id == TrackerClimbableEntity.spicevine_id
+                        || b.id == TrackerClimbableEntity.spicevineceiling_id
+                        || (c.name != null && c.name.StartsWith("spicevineceiling"));
+                    if (spice) {
+                        if (c.name != null && c.name.StartsWith("spicevineceiling") && b.id != TrackerClimbableEntity.spicevineceiling_id)
+                            b.id = TrackerClimbableEntity.spicevineceiling_id;
+                        return false;
+                    }
                     if (!obj.TryGetComponent<TrackerClimbableEntity>(out var _)) {
                         var r = obj.AddComponent<TrackerClimbableEntity>();
                         // late-bind fullgame climbables if prefab init had not rewritten this instance yet

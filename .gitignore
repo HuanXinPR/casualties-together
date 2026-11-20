@@ -44,6 +44,7 @@ scripts/__pycache__/
 ScavPrototypeMP/Optimizinator/Evidence/archived/
 docs/
 .history
+.github/workflows/sync-to-public.yml
 
 # Build artis
 CasualtiesTogether.Local.props

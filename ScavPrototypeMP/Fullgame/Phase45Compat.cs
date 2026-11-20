@@ -46,6 +46,23 @@ public static class FullgameWorldCompat {
         return y < (float)(0L - (long)half) + 3.1f;
     }
 
+    // 预留 8 格回退滞后余量，避免玩家恰好踩在出口判定线上时被误判为已离开出口区域
+    public static bool HasLeftLayerExit(Body body) {
+        if (body == null || WorldGeneration.world == null) {
+            return true;
+        }
+        if (IsWwmrLayer()) {
+            return true;
+        }
+        float y = body.transform.position.y;
+        uint half = WorldGeneration.world.halfHeight;
+        const float slack = 8f;
+        if (IsAscentLayer()) {
+            return y < (float)half - 5f - slack;
+        }
+        return y >= (float)(0L - (long)half) + 3.1f + slack;
+    }
+
     public static void WriteWorldExtras(NetDataWriter writer) {
         writer.Put(Physics2D.gravity.y);
         writer.Put(WorldGeneration.world != null && WorldGeneration.world.isMercRun);
@@ -231,8 +248,8 @@ internal sealed class FanClientFollow : MonoBehaviour {
 /// <summary>
 /// 风扇陷阱（<see cref="FanTrap"/>）转速、期望转速与扇叶断裂状态的 <see cref="SyncInfo.specialdata1"/> / <see cref="SyncInfo.specialdata2"/> 编解码及客机推人模拟。
 /// </summary>
-internal static class FanTrapSync {
-    internal static void Write(FanTrap fan, SyncInfo si, bool force = false) {
+public static class FanTrapSync {
+    public static void Write(FanTrap fan, SyncInfo si, bool force = false) {
         if (fan == null || si == null) {
             return;
         }
@@ -286,7 +303,7 @@ internal static class FanTrapSync {
         desired = d / 100f;
     }
 
-    internal static bool Apply(FanTrap fan, byte raw, float packed) {
+    public static bool Apply(FanTrap fan, byte raw, float packed) {
         if (fan == null) {
             return false;
         }
@@ -656,41 +673,16 @@ static class BloodSuckerScript_OnWillRenderObject_HostDrain_MultiplayerPatch {
     }
 }
 
-// geothermal heaters (hot rock and the cold amogus vent) only lerp PlayerCamera.main.body.
-// the host applies that lerp to every body in range and syncs it.
+// 原版仅对相机视野内的本地身体做温度插值，且结构空调等子物体常在房主镜头外；
+// 统一交由 HeaterMultiplayerRewrite 在房主端按半径对全体玩家结算并同步。
 [HarmonyPatch(typeof(Heater), "OnWillRenderObject")]
 static class Heater_OnWillRenderObject_AllBodies_MultiplayerPatch {
     static bool Prefix(Heater __instance) {
         if (!Net.IsRunning || __instance == null) {
             return true;
         }
-        if (!Net.IsServer) {
-            return false;
-        }
-        Traverse tr = Traverse.Create(__instance);
-        float last = tr.Field("lastTime").GetValue<float>();
-        if (Time.time - last <= 0.5f) {
-            return false;
-        }
-        tr.Field("lastTime").SetValue(Time.time);
-        float desired = __instance.desiredTemp;
-        bool heating = desired >= 37f;
-        float reach = __instance.maxDistance;
-        if (reach <= 0f) {
-            return false;
-        }
-        Vector2 pos = __instance.transform.position;
-        foreach (NetBody nb in NetBody.GetBodiesInRadius(pos, reach)) {
-            Body body = nb != null ? nb.body : null;
-            if (body == null) {
-                continue;
-            }
-            bool towards = (heating && body.temperature < desired) || (!heating && body.temperature > desired);
-            if (!towards) {
-                continue;
-            }
-            body.temperature = Mathf.Lerp(body.temperature, desired, __instance.tempLerpStrength);
-            MedicalSync.Server_QueueSendCharacterHealth(nb, true);
+        if (Net.IsServer) {
+            HeaterMultiplayerRewrite.Apply(__instance);
         }
         return false;
     }
@@ -856,9 +848,11 @@ internal static class CeilingTurretHostSim {
     }
 
     static readonly Dictionary<int, SentAim> Sent = new Dictionary<int, SentAim>();
+    static int _sentPruneAt = StaleIds.FirstThreshold;
     static CeilingTurret[] _cached;
     static int _cachedFrame = -1;
     static readonly Dictionary<int, MoveSample> _moveSample = new Dictionary<int, MoveSample>();
+    static int _movePruneAt = StaleIds.FirstThreshold;
 
     internal static void Tick(CeilingTurret ct) {
         if (ct == null) {
@@ -958,6 +952,7 @@ internal static class CeilingTurretHostSim {
         if (!aimDue) {
             return;
         }
+        StaleIds.Prune<CeilingTurret, SentAim>(Sent, ref _sentPruneAt);
         Sent[id] = new SentAim {
             Angle = angle,
             Next = Time.time + (fired ? 0.05f : 0.2f),
@@ -1005,7 +1000,7 @@ internal static class CeilingTurretHostSim {
         if (shotDir.sqrMagnitude < 0.01f) {
             shotDir = Vector2.down;
         }
-        Sound.Play("rifleshot", shotPos, true, false, null, 1f, 1f, false, false);
+        Sound.Play("rifleshot", shotPos, true, false);
         if (WorldGeneration.world != null && WorldGeneration.world.biomeDepth == 11 && PlayerCamera.main != null) {
             PlayerCamera.main.threatMusicTime = 2f;
         }
@@ -1159,6 +1154,7 @@ internal static class CeilingTurretHostSim {
             return false;
         }
         int id = body.GetInstanceID();
+        StaleIds.Prune<Body, MoveSample>(_moveSample, ref _movePruneAt);
         Vector2 pos = body.transform.position;
         float now = Time.time;
         if (body.grounded && body.moveDir.sqrMagnitude < 0.04f) {

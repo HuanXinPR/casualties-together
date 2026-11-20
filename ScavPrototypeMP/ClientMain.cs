@@ -380,7 +380,8 @@ public class ClientMain : MonoBehaviour {
                 limb.rb.angularVelocity = Util_MPExtensions.UnquantizeFloatFromShort(limb_rb_angularVelocity, _RAGDOLL_ANGVEL_QUANTIZE);
             }
         }
-        if (body.IsRagdolling() && body.TryGetNetBody(out var nb)) {
+        // 客机接收布娃娃包后保留各肢体报文落点，仅服务端归位躯干中心，避免客机侧被每包强拉回中心造成冻结感
+        if (Net.IsServer && body.IsRagdolling() && body.TryGetNetBody(out var nb)) {
             nb.SetBodyPosition(center);
         }
     }
@@ -753,9 +754,9 @@ public class ClientMain : MonoBehaviour {
         reader.Get(out bool is_error);
 
         if (is_error) {
-            Multiplayer.DoMultiplayerStatusMessageError(msg);
+            Multiplayer.DoMultiplayerStatusMessageError(Lang.ParseTaggedString(msg));
         } else {
-            Multiplayer.DoMultiplayerStatusMessageLog(msg);
+            Multiplayer.DoMultiplayerStatusMessageLog(Lang.ParseTaggedString(msg));
         }
     }
 
@@ -1114,8 +1115,8 @@ public class ClientMain : MonoBehaviour {
         reader.Get(out knetid netbodyid);
         if (NetBody.TryGetNetBodyFromId(netbodyid, out var nb)) {
             reader = reader.DecompressReader();
-
-            //clientMain.ReadRagdollPacket(ref reader, nb.body);
+            if (nb.body != null)
+                ReadRagdollPacket(ref reader, nb.body);
         }
     }
 
@@ -1229,6 +1230,7 @@ public class ClientMain : MonoBehaviour {
             if (count > 0) {
                 Multiplayer.rules = new_rules;
                 Multiplayer.ApplyGameRules();
+                log.l("[rules] applied sv_cheats=" + Multiplayer.rules.sv_cheats + " clientcheats=" + Multiplayer.rules.AllowClientCheatCommands);
 
                 if (log.verbose && !String.IsNullOrWhiteSpace(msg) && count > 0)
                     Multiplayer.DoMultiplayerStatusMessageLog(msg);

@@ -30,48 +30,86 @@ namespace Together;
 
 public class HeaterMultiplayerRewrite : MonoBehaviour {
     Heater heater;
+    static readonly List<NetBody> _near = new List<NetBody>();
+    static Heater[] _cached = System.Array.Empty<Heater>();
+    static float _nextScan;
+    static float _nextApply;
 
     void Awake() {
         heater = GetComponent<Heater>();
     }
 
     void Update() {
-        //OG: Heater.OnWillRenderObject - all bodies in radius, host-authoritative temperature.
-        // covers: spaceheater / campfire / lifepod heater+AC / CrystalTemperature / any prefab Heater.
-        // body.temperature is medical-synced; clients must not mutate it or host snaps overwrite them.
-        // host sim range already stamps every player's 3x3, so far-client heaters still Update here.
-        if (Net.IsRunning && !Net.IsServer) {
+        if (!Net.IsRunning || !Net.IsServer) {
             return;
         }
-
         if (heater == null) {
             heater = GetComponent<Heater>();
-            if (heater == null) {
-                return;
-            }
         }
+        Apply(heater);
+    }
 
+    // 结构空调常挂在子物体上，房主不在视野内时 OnWillRenderObject 永不触发，且区块休眠会关闭整个结构；
+    // 由此全局轮询兜底结算所有非激活/未挂载重写组件的温控源并同步给范围内玩家。
+    public static void Tick() {
+        if (!Net.IsRunning || !Net.IsServer) {
+            return;
+        }
+        if (!SharedMain.LocalWorldIsGenerated) {
+            return;
+        }
+        float now = Time.unscaledTime;
+        if (now < _nextApply) {
+            return;
+        }
+        _nextApply = now + 0.5f;
+        if (now >= _nextScan) {
+            _cached = UnityEngine.Object.FindObjectsByType<Heater>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            _nextScan = now + 2f;
+        }
+        for (int i = 0; i < _cached.Length; i++) {
+            Heater heater = _cached[i];
+            if (heater == null) {
+                continue;
+            }
+            if (heater.gameObject.activeInHierarchy && heater.GetComponent<HeaterMultiplayerRewrite>() != null) {
+                continue;
+            }
+            Apply(heater);
+        }
+    }
+
+    // 单机模式（!Net.IsRunning）下原版 Heater.OnWillRenderObject 未被拦截，此处必须提前返回，避免无 NetBody 时空刷 heater.lastTime 吞掉原版温控冷却
+    public static void Apply(Heater heater) {
+        if (!Net.IsRunning || !Net.IsServer || heater == null || !heater.enabled) {
+            return;
+        }
         // crystalTemperature / sync AddComponent can leave maxDistance at 0; vanilla never cools then.
         float radius = heater.maxDistance;
         if (radius <= 0.01f) {
             radius = 10f;
         }
-
-        if (heater.enabled && Time.time - heater.lastTime > 0.5f) {
-            heater.lastTime = (Time.time);
-
-            foreach (var nb in NetBody.GetBodiesInRadius(heater.transform.position, radius)) {
-                var body = nb.body;
-                if (body == null) {
-                    continue;
-                }
-
-                if (
-                    ((heater.isHeater && body.temperature < heater.desiredTemp) || (!heater.isHeater && body.temperature > heater.desiredTemp))
-                ) {
-                    body.temperature = Mathf.Lerp(body.temperature, heater.desiredTemp, heater.tempLerpStrength);
-                }
+        if (Time.time - heater.lastTime <= 0.5f) {
+            return;
+        }
+        heater.lastTime = Time.time;
+        _near.Clear();
+        NetBody.GetBodiesInRadius(heater.transform.position, radius, _near);
+        for (int i = 0; i < _near.Count; i++) {
+            NetBody nb = _near[i];
+            if (nb == null) {
+                continue;
             }
+            Body body = nb.body;
+            if (body == null) {
+                continue;
+            }
+            bool towards = (heater.isHeater && body.temperature < heater.desiredTemp) || (!heater.isHeater && body.temperature > heater.desiredTemp);
+            if (!towards) {
+                continue;
+            }
+            body.temperature = Mathf.Lerp(body.temperature, heater.desiredTemp, heater.tempLerpStrength);
+            MedicalSync.Server_QueueSendCharacterHealth(nb, true);
         }
     }
 
@@ -229,6 +267,63 @@ public class OnWillRenderObject_ForceForMPComponent : MonoBehaviour {
     public MonoBehaviour target;
     Renderer[] _childRenderers;
     MethodInfo _willRender;
+    bool _wantSim;
+
+    void OnEnable() {
+        Camera.onPostRender += AfterCam;
+    }
+
+    void OnDisable() {
+        Camera.onPostRender -= AfterCam;
+    }
+
+    // 商人精灵位于子节点上，主摄像机不会回调根节点的 OnWillRenderObject；服务端在有存活玩家靠近或敌对时保持唤醒并推进仇恨与挥击
+    void TickTrader(TraderScript trader) {
+        if (trader == null || !Net.IsRunning) {
+            _wantSim = false;
+            return;
+        }
+        if (Net.IsClient) {
+            Body local = Util.GetLocalBody();
+            bool close = (local != null) && (Vector2.Distance(trader.transform.position, local.transform.position) < 12f);
+            _wantSim = trader.hostile || close;
+            return;
+        }
+        Body near = TrackerTrader.ClosestLiving(trader.transform.position);
+        bool hostClose = (near != null) && (Vector2.Distance(trader.transform.position, near.transform.position) < 12f);
+        if (trader.hostile || hostClose) {
+            if (!gameObject.activeSelf) {
+                gameObject.SetActive(true);
+            }
+            ChunkSleep.Ignore(gameObject);
+        }
+        _wantSim = trader.hostile || hostClose || ((tracker != null) && tracker.isVisible);
+        TraderScript_OnWillRender_PinLog.EnsureClimb(trader);
+    }
+
+    void AfterCam(Camera cam) {
+        if (cam != Camera.main || !_wantSim || !(target is TraderScript trader)) {
+            return;
+        }
+        if (TraderScript_OnWillRender_PinLog.RanThisFrame(trader)) {
+            return;
+        }
+        InvokeWillRender();
+    }
+
+    void InvokeWillRender() {
+        if (_willRender == null) {
+            _willRender = target.GetType().GetMethod("OnWillRenderObject", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+        }
+        if (_willRender == null) {
+            return;
+        }
+        try {
+            _willRender.Invoke(target, null);
+        } catch (System.Exception e) {
+            Plugin.log.LogError($"Failed force OnWillRenderObject for {target?.name}\n{e}");
+        }
+    }
 
     void CacheRenderers() {
         if ((target == null) || ((_childRenderers != null) && (_childRenderers.Length > 0))) {
@@ -253,6 +348,10 @@ public class OnWillRenderObject_ForceForMPComponent : MonoBehaviour {
     }
 
     void Update() {
+        if (target is TraderScript trader) {
+            TickTrader(trader);
+            return;
+        }
         if (Net.IsClient) {
             if (target is GunmineScript gun) {
                 TrapClaim.TickClientGun(gun);
@@ -897,6 +996,11 @@ public static class BuildingEntity_Update_MultiplayerPatch {
             PlayDeathOnce(__instance);
             return false;
         }
+        // 联机模式下在 Prefix 直接接管刚体休眠状态：若落入原版 Update，房主视野外区块渲染关闭会先置 Static 清零下落速度，导致远端掉落物卡在空中
+        if (Net.IsRunning && __instance != null && __instance.TryGetComponent(out Rigidbody2D rb) && !__instance.ignoreBodyOptimize) {
+            BuildingOptimization(rb);
+            return false;
+        }
         return true;
     }
 
@@ -946,11 +1050,6 @@ public static class BuildingEntity_Update_MultiplayerPatch {
             return;
         if (__instance != null)
             ChunkSleep.Watch(__instance);
-
-        //OG: BuildingEntity.Update V5t4
-        if (__instance.TryGetComponent(out Rigidbody2D rb) && !__instance.ignoreBodyOptimize) {
-            BuildingOptimization(rb);
-        }
     }
 
     static void BuildingOptimization(Rigidbody2D rb) {
@@ -958,13 +1057,18 @@ public static class BuildingEntity_Update_MultiplayerPatch {
         //OG: BuildingEntity.Update V6.0-pre5 , that one liner but extended and just upgraded for multiplayer
 
         if (!WorldGeneration.world.worldExists || !(Time.timeScale <= 5f)) {
-            rb.bodyType = RigidbodyType2D.Static;
+            if (rb.bodyType != RigidbodyType2D.Static)
+                rb.bodyType = RigidbodyType2D.Static;
             return;
         }
 
-        var inSimRange = SharedMain.WorldInSimRange(rb.position);
-
-        rb.bodyType = inSimRange ? RigidbodyType2D.Dynamic : RigidbodyType2D.Static;
+        bool inSimRange = SharedMain.WorldInSimRange(rb.position);
+        RigidbodyType2D want = inSimRange ? RigidbodyType2D.Dynamic : RigidbodyType2D.Static;
+        if (rb.bodyType != want)
+            rb.bodyType = want;
+        // 曾进入 Static 帧的刚体可能残留 simulated=false，恢复 Dynamic 时需同步唤醒物理模拟以保证正常自由落体
+        if (inSimRange && !rb.simulated)
+            rb.simulated = true;
 
     }
 
@@ -1083,10 +1187,8 @@ public static class BuildingEntity_Start_MultiplayerPatch {
     static void Postfix(BuildingEntity __instance) {
         if (!Net.IsRunning) return;
 
-        if (__instance.GetComponent<Heater>()) {
-            // i rewrote the heater to support multiple players
-            __instance.GetOrAddComponent<HeaterMultiplayerRewrite>();
-        } else {
+        // 结构空调位于建筑子层级而非根节点，递归遍历所有子节点挂载 HeaterMultiplayerRewrite
+        if (!AttachHeaterRewrites(__instance)) {
             // plants / AC may AddComponent<Heater> in their own Start after this postfix
             __instance.StartCoroutine(AttachHeaterRewriteNextFrame(__instance));
         }
@@ -1145,14 +1247,26 @@ public static class BuildingEntity_Start_MultiplayerPatch {
 
     }
 
+    static bool AttachHeaterRewrites(BuildingEntity building) {
+        if (building == null) {
+            return false;
+        }
+        Heater[] heaters = building.GetComponentsInChildren<Heater>(true);
+        bool any = false;
+        for (int i = 0; i < heaters.Length; i++) {
+            Heater heater = heaters[i];
+            if (heater == null) {
+                continue;
+            }
+            any = true;
+            heater.GetOrAddComponent<HeaterMultiplayerRewrite>();
+        }
+        return any;
+    }
+
     static IEnumerator AttachHeaterRewriteNextFrame(BuildingEntity building) {
         yield return null;
-        if (building == null || building.gameObject == null) {
-            yield break;
-        }
-        if (building.GetComponent<Heater>() != null) {
-            building.GetOrAddComponent<HeaterMultiplayerRewrite>();
-        }
+        AttachHeaterRewrites(building);
     }
 }
 
@@ -1425,3 +1539,66 @@ internal class ScavMPBuildingSynchronizer : CasualtiesTogetherSingleton {
 
 
 }
+
+// 标记关键建筑在全体玩家远离后仍保留于网络快照中，确保中途加入的客机也能收到
+internal sealed class KeepForJoiners : MonoBehaviour {
+}
+
+#if FULLGAME
+internal static class LayerBuildingStream {
+    internal static void HostRegister() {
+        if (!Net.IsRunning || !Net.IsServer)
+            return;
+        WorldGeneration world = WorldGeneration.world;
+        if (world == null || !world.worldExists)
+            return;
+
+        CeilingTurret[] guns = UnityEngine.Object.FindObjectsOfType<CeilingTurret>(true);
+        for (int i = 0; i < guns.Length; i++) {
+            if (guns[i] == null)
+                continue;
+            BuildingEntity gunBuild = guns[i].GetComponent<BuildingEntity>();
+            if (gunBuild != null && string.IsNullOrEmpty(gunBuild.id))
+                gunBuild.id = "ceilingturret";
+            Try(gunBuild, true);
+        }
+
+        BloodSuckerScript[] dens = UnityEngine.Object.FindObjectsOfType<BloodSuckerScript>(true);
+        for (int i = 0; i < dens.Length; i++) {
+            BuildingEntity den = BuildingOf(dens[i]);
+            if (den != null && string.IsNullOrEmpty(den.id))
+                den.id = "bloodsuckerden";
+            Try(den, true);
+        }
+
+        BlueHeart[] hearts = UnityEngine.Object.FindObjectsOfType<BlueHeart>(true);
+        for (int i = 0; i < hearts.Length; i++)
+            Try(BuildingOf(hearts[i]), false);
+    }
+
+    static BuildingEntity BuildingOf(Component part) {
+        if (part == null)
+            return null;
+        BuildingEntity build = part.GetComponent<BuildingEntity>();
+        if (build == null)
+            build = part.GetComponentInParent<BuildingEntity>();
+        return build;
+    }
+
+    static void Try(BuildingEntity build, bool nearOnly) {
+        if (build == null || build.gameObject == null)
+            return;
+        if (string.IsNullOrEmpty(build.id))
+            return;
+        if (NetObjectRegistry.ObjectShouldNotBeSynced(build.gameObject))
+            return;
+        if (!nearOnly)
+            build.gameObject.GetOrAddComponent<KeepForJoiners>();
+        if (NetObjectRegistry.IsRegistered(build.gameObject))
+            return;
+        if (nearOnly && !SharedMain.WorldInSimRange(build.transform.position))
+            return;
+        NetObjectRegistry.NewGO(build.gameObject);
+    }
+}
+#endif

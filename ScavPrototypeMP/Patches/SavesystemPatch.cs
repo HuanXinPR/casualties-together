@@ -278,6 +278,12 @@ public static class SaveSystem_LoadGame_MultiplayerPatch {
             return false;
         }
 
+        // 房主迁移可选中从未参与过本局的新房主；根存档仅提供世界元数据而非他人身体，由 Postfix 按各玩家子目录恢复既有角色
+        if (!force && TransferTransport.SkipTransferredRootBody()) {
+            log.l("Host transfer: new host has no saved character; keeping their fresh character.");
+            return false;
+        }
+
         if (!force) {
             var OG_LOCAL_BODY = Util.GetLocalBody();
             SavesystemPatch.savedatapathreplacement = SavesystemPatch.GetTheOnePersistentDataPathWithSaveFile();
@@ -329,7 +335,7 @@ public static class SaveSystem_LoadGame_MultiplayerPatch {
 
                 var mpsavedir = SavesystemPatch.mpsavefolder;
                 if (Multiplayer.IsNetworkActiveAndIsServer() && SaveSystem.loadedRun && Directory.Exists(mpsavedir)) {
-                    Multiplayer.DoMultiplayerStatusMessageLog("Attempting to load a multiplayer save.");
+                    Multiplayer.DoMultiplayerStatusMessageLog(Lang.Get("savesystem_loading_mp_save"));
                     if (SavesystemPatch.TryPeekMpWorldState(out var peek) && WorldGeneration.world != null) {
                         SavesystemPatch.ApplyPeekedWorldState(WorldGeneration.world, peek);
                         log.l($"LoadGame: applied mp_save world peek depth={peek.biomeDepth} midlevel={peek.midlevel} traveled={peek.totalTraveled}");
@@ -389,6 +395,9 @@ public static class SaveSystem_LoadGame_MultiplayerPatch {
 
                                 if (jObject.TryGetValue("RULES", out var RULES)) {
                                     Multiplayer.rules = RULES.ToObject<MultiplayerGameRules>();
+                                    if (SavesystemPatch.DebugWorldUsesSave) {
+                                        Multiplayer.rules.DebugWorldSaveSystem = true;
+                                    }
                                 }
 #if FULLGAME
                                 if (jObject.TryGetValue(AchievementBreakSync.SaveHeaderKey, out var CHEATED)
@@ -545,6 +554,8 @@ public static class SavesystemPatch {
     public static string savedatapathreplacement = "";
     // set for map debug and the tutorial. those sessions neither read nor write mp_save.
     internal static bool PreserveSave;
+    // 调试地图启用 DebugWorldSaveSystem 后，防止被读取存档时的旧规则覆盖关闭
+    internal static bool DebugWorldUsesSave;
     // continue/LoadRun: sticky across WaitLoad→scene load so Start still treats this as a loaded run
     // even if something clears SaveSystem.loadedRun before TryLoadGame.
     internal static bool PendingLoadMpSave;

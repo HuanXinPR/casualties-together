@@ -19,6 +19,7 @@ namespace Together;
 [HarmonyPatch(typeof(PreRunScript), nameof(PreRunScript.StartRun))]
 public static class PreRunScript_StartRun_MultiplayerPatch {
     static bool Prefix(PreRunScript __instance) {
+        if (!LobbyHostTransfer.AllowRun(false)) return false;
         if (Net.IsRunning) {
 
             //TODO implement this
@@ -34,7 +35,7 @@ public static class PreRunScript_StartRun_MultiplayerPatch {
             return false;
 #else
             if (Net.IsClient) {
-                Multiplayer.DoMultiplayerStatusMessageLog("You can't start the game, server can.");
+                Multiplayer.DoMultiplayerStatusMessageLog(Lang.Get("client_cant_start_game"));
                 return false;
             }
             SaveSystem.loadedRun = false;
@@ -54,6 +55,7 @@ public static class PreRunScript_StartRun_MultiplayerPatch {
 [HarmonyPatch(typeof(PreRunScript), nameof(PreRunScript.LoadRun))]
 public static class PreRunScript_LoadRun_MultiplayerPatch {
     static bool Prefix(PreRunScript __instance) {
+        if (!LobbyHostTransfer.AllowRun(true)) return false;
         if (Net.IsRunning) {
 #if FULLGAME
             // continue: skip char select, load saved run immediately
@@ -61,7 +63,7 @@ public static class PreRunScript_LoadRun_MultiplayerPatch {
             return false;
 #else
             if (Net.IsClient) {
-                Multiplayer.DoMultiplayerStatusMessageLog("You can't start the game, server can.");
+                Multiplayer.DoMultiplayerStatusMessageLog(Lang.Get("client_cant_start_game"));
                 return false;
             }
 
@@ -81,9 +83,10 @@ public static class PreRunScript_LoadRun_MultiplayerPatch {
 [HarmonyPatch(typeof(PreRunScript), nameof(PreRunScript.StartTutorial))]
 public static class PreRunScript_StartTutorial_MultiplayerPatch {
     static bool Prefix(PreRunScript __instance) {
+        if (!LobbyHostTransfer.AllowRun(false)) return false;
         if (Net.IsRunning) {
             if (Net.IsClient) {
-                Multiplayer.DoMultiplayerStatusMessageLog("You can't start the game, server can.");
+                Multiplayer.DoMultiplayerStatusMessageLog(Lang.Get("client_cant_start_game"));
                 return false;
             }
 
@@ -394,10 +397,11 @@ public static class WorldGeneration_CreateExplosion_MultiplayerPatch {
 [HarmonyPatch(typeof(WorldGeneration), nameof(WorldGeneration.RegenerateWorld))]
 public static class RegenerateWorldPatch {
 
-    public static void Prefix(WorldGeneration __instance) {
+    public static void Prefix(WorldGeneration __instance, bool __0) {
 
         try {
 
+            LobbyHostTransfer.ArmBoundary(__instance, __0);
             Con.UnNoclip();
 
             if (Net.IsRunning) {
@@ -408,7 +412,7 @@ public static class RegenerateWorldPatch {
                     Net.Server_SendToClientsVeryReliable(writer, ServerMain.AllClientIdsExceptHost);
                     // WRITER END;
 
-                    Multiplayer.DoMultiplayerStatusMessageLog("Announced RegenerateWorld.");
+                    Multiplayer.DoMultiplayerStatusMessageLog(Lang.Get("worldgen_announced_regen"));
 
                     if (!Multiplayer.rules.RespawnKeepInventory) {
                         // drop inventory of dead players for the items to get deleted 
@@ -876,70 +880,137 @@ public static class WorldGeneration_GenerateWorld_MultiplayerPatch {
 
     public static LastBeforeGenerationState firstworldgenparams;
     public static bool client_firstworldgenparams_are_used = true;
+    static bool _specialPrefabsReady;
+
+    // 重复改写已修改过的预制体资源存在引发底层崩溃的风险，统一通过带日志与异常捕获的辅助函数加载并配合 _specialPrefabsReady 保证单次幂等
+    static GameObject LoadPrefab(string id) {
+        log.l("[prefab] load " + id);
+        try {
+            GameObject go = Resources.Load<GameObject>(id);
+            if (go == null) {
+                log.warn("[prefab] missing " + id);
+            }
+            return go;
+        } catch (Exception ex) {
+            log.error("[prefab] load fail " + id + "\n" + ex);
+            return null;
+        }
+    }
+
+    static void PatchClimbable(string id, string newId) {
+        GameObject go = LoadPrefab(id);
+        if (go == null) {
+            return;
+        }
+        try {
+            TrackerClimbableEntity c = go.GetOrAddComponent<TrackerClimbableEntity>();
+            BuildingEntity b = go.GetComponent<BuildingEntity>();
+            if (b == null) {
+                log.warn("[prefab] no building " + id);
+                return;
+            }
+            if (string.IsNullOrEmpty(c.og_id)) {
+                c.og_id = b.id;
+            }
+            if (newId != null) {
+                b.id = newId;
+            }
+            log.l("[prefab] ok " + id);
+        } catch (Exception ex) {
+            log.error("[prefab] patch fail " + id + "\n" + ex);
+        }
+    }
 
     public static void InitializeSpecialResourcePrefabs() {
+        if (_specialPrefabsReady) {
+            log.l("[prefab] skip, already patched");
+            return;
+        }
+        log.l("[prefab] begin");
         {
-            var ticks = (GameObject)Resources.Load("CaveTicks");
-            ticks.GetOrAddComponent<TrackerStaticCaveTicks>();
+            GameObject ticks = LoadPrefab("CaveTicks");
+            if (ticks != null) {
+                try {
+                    ticks.GetOrAddComponent<TrackerStaticCaveTicks>();
+                    log.l("[prefab] ok CaveTicks");
+                } catch (Exception ex) {
+                    log.error("[prefab] patch fail CaveTicks\n" + ex);
+                }
+            }
         }
         {
-            var sandvine = (GameObject)Resources.Load("Special/sandvinerope");
-            var c = sandvine.GetOrAddComponent<TrackerClimbableEntity>();
-            var b = sandvine.GetComponent<BuildingEntity>();
-            if (String.IsNullOrEmpty(c.og_id))
-                c.og_id = b.id;
-            b.id = TrackerClimbableEntity.sandvine_new_id; // cuz originally its "sandvine" which is not a valid resource
-
-            var mushroomrope = (GameObject)Resources.Load("Special/mushroomrope");
-            c = mushroomrope.GetOrAddComponent<TrackerClimbableEntity>();
-            b = mushroomrope.GetComponent<BuildingEntity>();
-            if (String.IsNullOrEmpty(c.og_id))
-                c.og_id = b.id;
-            b.id = TrackerClimbableEntity.mushroomrope_new_id; // cuz originally its just "mushroomrope" but its in the special folder so i need to specify that
+            PatchClimbable("Special/sandvinerope", TrackerClimbableEntity.sandvine_new_id);
+            PatchClimbable("Special/mushroomrope", TrackerClimbableEntity.mushroomrope_new_id);
 
 #if FULLGAME
-            var veinloop = (GameObject)Resources.Load("Special/veinloop");
-            if (veinloop != null) {
-                c = veinloop.GetOrAddComponent<TrackerClimbableEntity>();
-                b = veinloop.GetComponent<BuildingEntity>();
-                if (b != null) {
-                    if (String.IsNullOrEmpty(c.og_id))
-                        c.og_id = b.id;
-                    b.id = TrackerClimbableEntity.veinloop_new_id;
-                }
-            }
+            PatchClimbable("Special/veinloop", TrackerClimbableEntity.veinloop_new_id);
 
-            var spicevine = (GameObject)Resources.Load(TrackerClimbableEntity.spicevine_id);
+            GameObject spicevine = LoadPrefab(TrackerClimbableEntity.spicevine_id);
             if (spicevine != null) {
-                c = spicevine.GetOrAddComponent<TrackerClimbableEntity>();
-                b = spicevine.GetComponent<BuildingEntity>();
-                if (b != null && String.IsNullOrEmpty(c.og_id)) {
-                    c.og_id = b.id;
-                }
-            }
-
-            var spicevineceiling = (GameObject)Resources.Load(TrackerClimbableEntity.spicevineceiling_id);
-            if (spicevineceiling != null) {
-                c = spicevineceiling.GetOrAddComponent<TrackerClimbableEntity>();
-                b = spicevineceiling.GetComponent<BuildingEntity>();
-                if (b != null) {
-                    if (String.IsNullOrEmpty(c.og_id)) {
+                try {
+                    TrackerClimbableEntity c = spicevine.GetOrAddComponent<TrackerClimbableEntity>();
+                    BuildingEntity b = spicevine.GetComponent<BuildingEntity>();
+                    if (b != null && string.IsNullOrEmpty(c.og_id)) {
                         c.og_id = b.id;
                     }
-                    // stock id is also "spicevine" - clients need the ceiling resource path
-                    b.id = TrackerClimbableEntity.spicevineceiling_id;
+                    log.l("[prefab] ok " + TrackerClimbableEntity.spicevine_id);
+                } catch (Exception ex) {
+                    log.error("[prefab] patch fail " + TrackerClimbableEntity.spicevine_id + "\n" + ex);
+                }
+            }
+
+            GameObject spicevineceiling = LoadPrefab(TrackerClimbableEntity.spicevineceiling_id);
+            if (spicevineceiling != null) {
+                try {
+                    TrackerClimbableEntity c = spicevineceiling.GetOrAddComponent<TrackerClimbableEntity>();
+                    BuildingEntity b = spicevineceiling.GetComponent<BuildingEntity>();
+                    if (b != null) {
+                        if (string.IsNullOrEmpty(c.og_id)) {
+                            c.og_id = b.id;
+                        }
+                        // stock id is also "spicevine" - clients need the ceiling resource path
+                        b.id = TrackerClimbableEntity.spicevineceiling_id;
+                    }
+                    log.l("[prefab] ok " + TrackerClimbableEntity.spicevineceiling_id);
+                } catch (Exception ex) {
+                    log.error("[prefab] patch fail " + TrackerClimbableEntity.spicevineceiling_id + "\n" + ex);
                 }
             }
 #endif
 
-            var climbingropeextended = (GameObject)Resources.Load("climbingropeextended");
-            c = climbingropeextended.GetOrAddComponent<TrackerClimbableEntity>(); // for some reason it doesnt get put on ? (OR NAH, ITS PROLLY CUZ ITS FROM BUILTINGS)
-
-            var ladder = (GameObject)Resources.Load("ladder");
-            c = ladder.GetOrAddComponent<TrackerClimbableEntity>();
-
-            var defibrack = (GameObject)Resources.Load("Special/defibrack");
-            defibrack.GetComponent<BuildingEntity>().id = "Special/defibrack";
+            // component only. these prefabs come from buildings and have no id rewrite.
+            GameObject climbingropeextended = LoadPrefab("climbingropeextended");
+            if (climbingropeextended != null) {
+                try {
+                    climbingropeextended.GetOrAddComponent<TrackerClimbableEntity>();
+                    log.l("[prefab] ok climbingropeextended");
+                } catch (Exception ex) {
+                    log.error("[prefab] patch fail climbingropeextended\n" + ex);
+                }
+            }
+            GameObject ladder = LoadPrefab("ladder");
+            if (ladder != null) {
+                try {
+                    ladder.GetOrAddComponent<TrackerClimbableEntity>();
+                    log.l("[prefab] ok ladder");
+                } catch (Exception ex) {
+                    log.error("[prefab] patch fail ladder\n" + ex);
+                }
+            }
+            GameObject defibrack = LoadPrefab("Special/defibrack");
+            if (defibrack != null) {
+                try {
+                    BuildingEntity rack = defibrack.GetComponent<BuildingEntity>();
+                    if (rack == null) {
+                        log.warn("[prefab] no building Special/defibrack");
+                    } else {
+                        rack.id = "Special/defibrack";
+                        log.l("[prefab] ok Special/defibrack");
+                    }
+                } catch (Exception ex) {
+                    log.error("[prefab] patch fail Special/defibrack\n" + ex);
+                }
+            }
 
         }
         {
@@ -968,9 +1039,8 @@ public static class WorldGeneration_GenerateWorld_MultiplayerPatch {
             }) {
                 GameObject basObj = null;
                 try {
-                    basObj = Resources.Load<GameObject>(item);
+                    basObj = LoadPrefab(item);
                     if (basObj == null) {
-                        log.warn($"Force-register backgrounds: missing prefab {item}");
                         continue;
                     }
                     foreach (Transform ch in basObj.transform) {
@@ -980,20 +1050,51 @@ public static class WorldGeneration_GenerateWorld_MultiplayerPatch {
 
             }
 
+#if FULLGAME
+            try {
+                GameObject heartCont = LoadPrefab("Structures/BlueHeartCont");
+                if (heartCont != null) {
+                    BlueHeart[] hearts = heartCont.GetComponentsInChildren<BlueHeart>(true);
+                    for (int i = 0; i < hearts.Length; i++) {
+                        if (hearts[i] == null)
+                            continue;
+                        BuildingEntity heartBuild = hearts[i].GetComponent<BuildingEntity>();
+                        if (heartBuild == null)
+                            heartBuild = hearts[i].GetComponentInParent<BuildingEntity>();
+                        if (heartBuild == null) {
+                            heartBuild = hearts[i].gameObject.AddComponent<BuildingEntity>();
+                            heartBuild.id = "KMPSR_BlueHeart";
+                        } else if (string.IsNullOrEmpty(heartBuild.id) || heartBuild.id == "background") {
+                            heartBuild.id = "KMPSR_BlueHeart";
+                        }
+                        if (heartBuild.id == "KMPSR_BlueHeart")
+                            ScavMPBuildingSynchronizer.known_entities_with_nonunique_id[heartBuild.id] = heartBuild.gameObject;
+                    }
+                    log.l("[prefab] ok Structures/BlueHeartCont");
+                }
+            } catch (Exception ex) {
+                log.error("[prefab] patch fail Structures/BlueHeartCont\n" + ex);
+            }
+#endif
+
         }
         {
             // patch heavy drill sound
+            try {
+                GameObject basObj = LoadPrefab("heavydrill");
+                AudioSource audio = basObj != null ? basObj.GetComponent<AudioSource>() : null;
 
-            var basObj = Resources.Load<GameObject>("heavydrill");
-            var audio = basObj?.GetComponent<AudioSource>();
+                if (audio != null) {
+                    audio.spatialBlend = 1;
+                    audio.volume *= 0.6f;
 
-            if (audio != null) {
-                audio.spatialBlend = 1;
-                audio.volume *= 0.6f;
-
-                audio.maxDistance = 150;
-                audio.minDistance = 30;
-                audio.rolloffMode = AudioRolloffMode.Linear;
+                    audio.maxDistance = 150;
+                    audio.minDistance = 30;
+                    audio.rolloffMode = AudioRolloffMode.Linear;
+                    log.l("[prefab] ok heavydrill");
+                }
+            } catch (Exception ex) {
+                log.error("[prefab] patch fail heavydrill\n" + ex);
             }
 
         }
@@ -1003,13 +1104,18 @@ public static class WorldGeneration_GenerateWorld_MultiplayerPatch {
             foreach (var item in NetObjectRegistry.lowpriority_objects_resourceids) {
                 GameObject basObj = null;
                 try {
-                    basObj = Resources.Load<GameObject>(item);
+                    basObj = LoadPrefab(item);
+                    if (basObj == null) {
+                        continue;
+                    }
                     basObj.GetOrAddComponent<ItemDespawnerIfUntouched>();
-                } catch (Exception ex) { log.error($"{item} despawn component fail {basObj}:\n" + ex.ToString()); }
+                    log.l("[prefab] ok " + item);
+                } catch (Exception ex) { log.error("[prefab] despawn fail " + item + " " + basObj + "\n" + ex); }
             }
         }
 
-
+        _specialPrefabsReady = true;
+        log.l("[prefab] done");
     }
 
     public static bool Prefix(WorldGeneration __instance, ref IEnumerator __result) {
@@ -1024,7 +1130,7 @@ public static class WorldGeneration_GenerateWorld_MultiplayerPatch {
 }
 
 /// <summary>
-/// 房主死亡后允许抵达出口的存活客机弹出过关/保存面板并向服务端发起 <c>layer_continue</c> / <c>layer_save</c> 请求（对齐 v5.5.3）。
+/// 房主死亡后除房主自身常驻结算面板外，兼容允许已抵达出口的存活客机在全员达标时通过 <c>layer_continue</c> / <c>layer_save</c> 代理推进下一层或保存退出。
 /// </summary>
 internal static class LayerExitWhenHostDead {
     private static bool saveBusy;
@@ -1091,21 +1197,68 @@ internal static class LayerExitWhenHostDead {
 [HarmonyPatch(typeof(WorldGeneration), nameof(WorldGeneration.Update))]
 internal static class WorldGeneration_Update_DeadHostExitPanel {
     private static void Postfix(WorldGeneration __instance) {
-        if (!Net.IsRunning || __instance == null || __instance.savePanel == null
-            || !ServerMain.HostBodyIsDead() || __instance.doingRegen || __instance.generatingWorld || !__instance.worldExists) {
+        if (!Net.IsRunning || __instance == null || __instance.savePanel == null) {
             return;
         }
-        bool show = ServerMain.CheckIfEnoughPeopleAreAtLayerFinish();
+        if (Net.IsClient) {
+            // 房主死亡且本地存活客机已抵达出口、人数达标时保留面板供客机代理点击；其余情况一律按上游规则收起面板并给出对应等待提示
+            bool allowDeadHostProxy = ServerMain.HostBodyIsDead()
+                && !__instance.doingRegen && !__instance.generatingWorld && __instance.worldExists
+                && ServerMain.LocalPlayerAtLayerExit() && ServerMain.CheckIfEnoughPeopleAreAtLayerFinish();
+#if FULLGAME
+            if (FullgameWorldCompat.IsAscentLayer()) {
+                allowDeadHostProxy = false;
+            }
+#endif
+            if (allowDeadHostProxy) {
+                if (!__instance.savePanel.activeSelf) {
+                    __instance.savePanel.SetActive(true);
+                }
+                if (PlayerCamera.main?.body != null) {
+                    PlayerCamera.main.body.forceWalk = false;
+                }
+                return;
+            }
+
+            if (__instance.savePanel.activeSelf) {
+                __instance.savePanel.SetActive(false);
+                if (PlayerCamera.main != null && PlayerCamera.main.body != null) {
+                    PlayerCamera.main.body.forceWalk = false;
+                    ScavPlayer plr = ScavPlayer.LocalPlayer;
+                    if (plr != null && !__instance.doingRegen && !__instance.generatingWorld && __instance.worldExists && !plr.finishedLayer) {
+                        plr.finishedLayer = true;
+                        if (ServerMain.HostBodyIsDead() || ServerMain.GetNumberOfPlayersRequiredToFinishLayer() == 1) {
+                            PlayerCamera.main.DoAlert(Lang.Get("layerfinish_wait_for_host"));
+                        } else {
+                            PlayerCamera.main.DoAlert(Lang.Get("layerfinish_wait_for_friends"));
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        ApplyHostExitPanel(__instance);
+    }
+
+    // 帧末最终裁定房主端结算面板显隐，防止原版仅检查房主自身 y 坐标把全员达标的面板反复关掉（同时供 TilemapSync 调用）
+    internal static void ApplyHostExitPanel(WorldGeneration world) {
+        if (world == null || world.savePanel == null) {
+            return;
+        }
+        if (world.doingRegen || world.generatingWorld || !world.worldExists) {
+            return;
+        }
+        bool open = ServerMain.CheckIfEnoughPeopleAreAtLayerFinish();
 #if FULLGAME
         if (FullgameWorldCompat.IsAscentLayer()) {
-            show = false;
+            open = false;
         }
 #endif
-        if (show && Net.IsClient && !ServerMain.LocalPlayerAtLayerExit()) {
-            show = false;
+        if (world.savePanel.activeSelf != open) {
+            world.savePanel.SetActive(open);
         }
-        if (__instance.savePanel.activeSelf != show) {
-            __instance.savePanel.SetActive(show);
+        if (open && PlayerCamera.main != null && PlayerCamera.main.body != null) {
+            PlayerCamera.main.body.forceWalk = false;
         }
     }
 }
@@ -1122,6 +1275,7 @@ public static class WorldGenerationSaveAndExitPatch {
                 if (LayerExitWhenHostDead.ClientAsk(__instance, save: true)) {
                     return false;
                 }
+                __instance.savePanel.SetActive(false);
                 PlayerCamera.main?.DoAlert(Lang.Get("wait_for_host"));
                 return false;
             }
@@ -1152,6 +1306,7 @@ public static class WorldGeneration_ContinueRun_MultiplayerPatch {
                 if (LayerExitWhenHostDead.ClientAsk(__instance, save: false)) {
                     return false;
                 }
+                __instance.savePanel.SetActive(false);
                 PlayerCamera.main?.DoAlert(Lang.Get("wait_for_host"));
                 return false;
             } else {

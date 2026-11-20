@@ -169,6 +169,12 @@ public static class PlayerCheckpoint {
         StampSpecies(Path.Combine(SavesystemPatch.mpsavefolder, persistentId), species, slot);
     }
 
+    // 房主迁移落地会替换整个检查点目录，必须清空内存物种缓存以强制从新存档盘重读
+    public static void OnHostTransferInstalled() {
+        _species.Clear();
+        _speciesSlot.Clear();
+    }
+
     public static bool TryReadSpecies(string persistentId, out string species, out int slot) {
         species = null;
         slot = 0;

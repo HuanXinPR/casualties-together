@@ -1,5 +1,7 @@
+using BepInEx.Configuration;
 using CasualtiesTogetherUtils;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -20,6 +22,71 @@ public static class Lang {
 
     static HashSet<string> failed = new();
 
+    static ConfigEntry<string> languageConfig;
+    static string selectedLocale = "";
+    static string[] availableLocales;
+
+    internal static void InitializeLanguageConfig(ConfigFile config) {
+        languageConfig = config.Bind("Localization", "Language", "auto", new ConfigDescription(
+            "Multiplayer mod language. auto follows the game's language. The in-game selector only saves when you click Save or Reset to Defaults.",
+            new AcceptableValueList<string>(new[] { "auto" }.Concat(AvailableLocales).ToArray())));
+        string configured = languageConfig.Value == "auto" ? "" : languageConfig.Value;
+        if (string.Equals(configured, "RU", StringComparison.OrdinalIgnoreCase) && dict.ContainsKey(RussianLocaleKey)) {
+            configured = RussianLocaleKey;
+        }
+        selectedLocale = configured;
+    }
+
+    // 菜单实时预览与已落盘配置解耦，避免未点保存前 BepInEx 立即覆写配置文件
+    internal static string SelectedLocale => selectedLocale;
+
+    internal static bool IsSelectedLocaleSaved {
+        get {
+            if (languageConfig == null)
+                return true;
+            var savedLocale = String.IsNullOrEmpty(SelectedLocale) ? "auto" : SelectedLocale;
+            return String.Equals(languageConfig.Value, savedLocale, StringComparison.Ordinal);
+        }
+    }
+
+    internal static string CurrentLocale => String.IsNullOrEmpty(SelectedLocale) ? Locale.currentLangName ?? "EN" : SelectedLocale;
+
+    internal static string[] AvailableLocales => availableLocales ??= dict.Keys
+        .OrderBy(locale => locale == "EN" ? 0 : 1)
+        .ThenBy(locale => locale, StringComparer.Ordinal)
+        .ToArray();
+
+    internal static string GetLocaleDisplayName(string locale) {
+        string resolved = ResolveLookupLocale(locale);
+        if (dict.TryGetValue(resolved, out var language) && language.TryGetValue("language_name", out var name) && !String.IsNullOrEmpty(name))
+            return name + " (" + resolved + ")";
+        return locale;
+    }
+
+    internal static void SetSelectedLocale(string locale) {
+        locale ??= "";
+        if (string.Equals(locale, "RU", StringComparison.OrdinalIgnoreCase) && dict.ContainsKey(RussianLocaleKey)) {
+            locale = RussianLocaleKey;
+        }
+        if (!String.IsNullOrEmpty(locale) && !dict.ContainsKey(locale))
+            return;
+        selectedLocale = locale;
+        failed.Clear();
+    }
+
+    internal static bool SaveSelectedLocale() {
+        if (languageConfig == null)
+            return false;
+        try {
+            languageConfig.Value = String.IsNullOrEmpty(SelectedLocale) ? "auto" : SelectedLocale;
+            languageConfig.ConfigFile.Save();
+            return IsSelectedLocaleSaved;
+        } catch (Exception e) {
+            log.error("Lang.SaveSelectedLocale: " + e.ToString());
+            return false;
+        }
+    }
+
     internal static string GetEN(string key) {
         if (EN.TryGetValue(key, out var value))
             return value;
@@ -27,7 +94,7 @@ public static class Lang {
     }
 
     internal const string LocalPrefixTag = "casualtiestogether_";
-    internal const string RussianLocaleKey = "RU";
+    internal const string RussianLocaleKey = "ru-RU";
 
     private static string _ruCachedLocale;
     private static object _ruCachedLangPack;
@@ -35,7 +102,7 @@ public static class Lang {
     private static string _ruLoggedLocale;
 
     /// <summary>
-    /// 自动识别游戏当前是否处于俄语本地化环境（合入上游 PR #63）：
+    /// 自动识别游戏当前是否处于俄语本地化环境（合入上游 PR #63 并映射至 <c>ru-RU</c>，同时双向兼容 <c>RU</c> 键）：
     /// 依次按语言标识符（<c>ru*</c> / <c>*russ*</c> / 含西里尔字符）及当前语言包的 <c>"layer"</c> 词条西里尔字符采样判定，并缓存判定结果。
     /// </summary>
     internal static bool IsRussianLocale(string locale) {
@@ -67,9 +134,29 @@ public static class Lang {
 
         if (isRu && _ruLoggedLocale != locale) {
             _ruLoggedLocale = locale;
-            Plugin.log?.LogInfo($"Lang: language '{locale}' detected as Russian, using embedded RU translation.");
+            Plugin.log?.LogInfo($"Lang: language '{locale}' detected as Russian, using embedded {RussianLocaleKey} translation.");
         }
         return isRu;
+    }
+
+    private static string ResolveLookupLocale(string locale) {
+        if (string.IsNullOrEmpty(locale)) {
+            return "EN";
+        }
+        if (dict.ContainsKey(locale)) {
+            return locale;
+        }
+        if (string.Equals(locale, "RU", StringComparison.OrdinalIgnoreCase) || IsRussianLocale(locale)) {
+            if (dict.ContainsKey(RussianLocaleKey))
+                return RussianLocaleKey;
+            if (dict.ContainsKey("RU"))
+                return "RU";
+            return RussianLocaleKey;
+        }
+        if (string.Equals(locale, RussianLocaleKey, StringComparison.OrdinalIgnoreCase) && dict.ContainsKey("RU")) {
+            return "RU";
+        }
+        return locale;
     }
 
     private static bool ContainsCyrillic(string text) {
@@ -85,15 +172,16 @@ public static class Lang {
     public static string Get(in string key, in bool allow_null_result = false) {
 
         string result = null;
-        var locale = Locale.currentLangName ?? "EN";
-        var lookupLocale = IsRussianLocale(locale) ? RussianLocaleKey : locale;
+        var locale = CurrentLocale;
+        var lookupLocale = ResolveLookupLocale(locale);
 
         if (dict.TryGetValue(lookupLocale, out var lang))
             if (lang.TryGetValue(key, out result) && String.IsNullOrEmpty(result))
                 result = null;
 
         var nkey = LocalPrefixTag + key;
-        if (Locale.currentLang != null) {
+        // 若用户在模组内单独锁定了语言，不被游戏本体的外部语言包词条反向覆盖
+        if ((String.IsNullOrEmpty(SelectedLocale) || locale == Locale.currentLangName) && Locale.currentLang?.other != null) {
             if (Locale.currentLang.other.TryGetValue(nkey, out var v) && !String.IsNullOrEmpty(v)) {
                 return v;
             } else {
@@ -102,7 +190,7 @@ public static class Lang {
                 }
                 if (!failed.Contains(nkey)) {
                     failed.Add(nkey);
-                    var en = GetEN(nkey);
+                    var en = GetEN(key);
                     if (String.IsNullOrEmpty(en)) {
                         if (!allow_null_result)
                             log.error($"Lang: Failed to get {locale} translation for \"{nkey}\"");
@@ -134,6 +222,68 @@ public static class Lang {
 
     public const string MSG_TYPE_DEF_SEPARATOR = "$\r";
     public const string TRANSLATION_KEY_MSG_MARK = "T" + MSG_TYPE_DEF_SEPARATOR;
+    const string FORMATTED_MSG_MARK = "F" + MSG_TYPE_DEF_SEPARATOR;
+
+    public readonly struct MessageArgument {
+        internal readonly string Text;
+        internal readonly bool IsMessage;
+
+        internal MessageArgument(string text, bool isMessage) {
+            Text = text;
+            IsMessage = isMessage;
+        }
+
+        public static implicit operator MessageArgument(string text) => new MessageArgument(text, false);
+    }
+
+    // 仅经显式 NestedMsg 包装的参数才递归按本地化消息解析，普通字符串参数原样保留字面值（防注入伪造协议标记）
+    public static MessageArgument NestedMsg(string message) => new MessageArgument(message, true);
+
+    public static string FormatMsg(string key, params MessageArgument[] arguments) {
+        var parts = new JArray(key);
+        foreach (var argument in arguments) {
+            if (argument.IsMessage)
+                parts.Add(new JObject { ["message"] = argument.Text ?? "" });
+            else
+                parts.Add(argument.Text ?? "");
+        }
+        return FORMATTED_MSG_MARK + JsonConvert.SerializeObject(parts);
+    }
+
+    static string ParseFormattedMessage(string message, int depth = 0) {
+        if (depth >= 8)
+            throw new InvalidDataException("Localized message nesting is too deep.");
+        if (message.StartsWith(TRANSLATION_KEY_MSG_MARK))
+            return Get(message.Substring(TRANSLATION_KEY_MSG_MARK.Length));
+        if (!message.StartsWith(FORMATTED_MSG_MARK))
+            return message;
+
+        var parts = JArray.Parse(message.Substring(FORMATTED_MSG_MARK.Length));
+        if (parts.Count == 0 || parts[0].Type != JTokenType.String || String.IsNullOrEmpty((string)parts[0]))
+            throw new InvalidDataException("Localized message has no translation key.");
+
+        var arguments = new object[parts.Count - 1];
+        for (int i = 1; i < parts.Count; i++) {
+            if (parts[i].Type == JTokenType.String) {
+                arguments[i - 1] = (string)parts[i];
+            } else if (parts[i] is JObject nested && nested.Count == 1 && nested["message"]?.Type == JTokenType.String) {
+                arguments[i - 1] = ParseFormattedMessage((string)nested["message"], depth + 1);
+            } else {
+                throw new InvalidDataException("Invalid localized message argument.");
+            }
+        }
+        return String.Format(Get((string)parts[0]), arguments);
+    }
+
+    public static string ParseDisconnectReason(string message) {
+        // 兼容可能发给旧客户端的英文裸拒连原因并转换为当前语言文案
+        switch (message) {
+            case "Version mismatch.": return Get("deny_version_mismatch");
+            case "Corrupt payload.": return Get("deny_corrupt_payload");
+            case "Server error.": return Get("deny_server_broke");
+            default: return ParseTaggedString(message);
+        }
+    }
    
     public static string MarkMsgAsLocaleKey(in string message) {
         return TRANSLATION_KEY_MSG_MARK + message;
@@ -202,6 +352,16 @@ public static class Lang {
         return false;
     }
     public static void MsgTryParse(ref string message) {
+        if (String.IsNullOrEmpty(message))
+            return;
+        if (message.StartsWith(FORMATTED_MSG_MARK)) {
+            try {
+                message = ParseFormattedMessage(message);
+            } catch (Exception e) {
+                log.error("Lang Message Formatting: " + e.ToString());
+            }
+            return;
+        }
         if (message.StartsWith(TRANSLATION_KEY_MSG_MARK)) {
             message = Lang.Get(message.Substring(TRANSLATION_KEY_MSG_MARK.Length));
         } else {
@@ -311,6 +471,7 @@ public static class Lang {
                 }
             }
 
+            availableLocales = null;
             LoadedLocale = true;
         } catch (Exception e) { log.error("Lang.InternalLoadLocale: " + e.ToString()); }
 

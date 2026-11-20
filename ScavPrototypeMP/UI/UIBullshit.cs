@@ -215,7 +215,14 @@ namespace Together {
         }
 
 
+        // 旧缩放/染色纹理在 GUISkin 重建完成前仍被样式引用，延迟到重建落地后再统一销毁
+        static readonly List<Texture2D> retired_textures = new();
+
         public static void ResizeGUITextures() {
+            foreach (Dictionary<Vector2, Texture2D> variants in cached_modified_textures.Values) {
+                retired_textures.AddRange(variants.Values);
+            }
+            retired_textures.AddRange(cached_scaled_textures.Values);
             cached_modified_textures.Clear();
             cached_scaled_textures.Clear();
 
@@ -242,7 +249,7 @@ namespace Together {
         public static bool DISCORD_ONLYASKTOJOINBUTTON = false;
 
         [SettingDeclarerThingyBool("setting_ui_talker_species_font")]//TODO Change this, This should only change body talker font, regardless of UNPIXELIZE_TALKER_FONT it will change both original and a copy
-        public static bool USE_TALKER_SPECIES_FONT = true;
+        public static bool USE_TALKER_SPECIES_FONT = false;
         // off keeps the species talker fonts. lives on the multiplayer user-interface tab.
         [SettingDeclarerThingyBool("setting_ui_defaulttalkerfont")]
         public static bool USE_DEFAULT_TALKER_FONT = false;
@@ -450,7 +457,7 @@ namespace Together {
             try {
 
                 if (
-                    !Con.IsConsoleOpen()
+                    !Con.IsConsoleOpen() && !HostTransferUI.IsModalOpen
                 ) {
                     try {
                         UIMainMenu._GUI_DrawSideMenuWithPlayerList();
@@ -957,8 +964,15 @@ namespace Together {
                 GUI.skin = new_skin;
 
                 if (_recalculate_skin) {
-                    _recalculate_skin = false;
+                    // FixSkinSkip 依赖 _recalculate_skin 决定是否执行重建，必须在重建完成后再复位标志并销毁旧纹理
                     _GUI_MPUISetSkinValues();
+                    _recalculate_skin = false;
+                    foreach (Texture2D retired in retired_textures) {
+                        if (retired != null) {
+                            UnityEngine.Object.Destroy(retired);
+                        }
+                    }
+                    retired_textures.Clear();
                 } else {
 
                     _GUI_MPUISetSkinValues();//fuck it
@@ -1528,18 +1542,24 @@ namespace Together {
 
                     ScavPlayer me = ScavPlayer.LocalPlayer;
 
-                    if (!Util.IsInWoundView() && me.body.conscious) {
+                    NetBody mine = (me != null && me.body != null) ? me.netBody : null;
+                    if (!Util.IsInWoundView() && me != null && me.body != null && me.body.conscious && mine != null) {
                         float pgbkbutton_hght = 80 * uisc;
-                        if (me.netBody.piggybacking_on != null) {
-                            if (UIBullshit._GUI_FocusableButton(new Rect(Screen.width * 0.5f - wdth2 / 2, Screen.height * 0.9f - 10 * uisc, wdth2, pgbkbutton_hght), Lang.Get("piggyback_stop") + "\n" + me.netBody.piggybacking_on.bodyName, out bool focused)) {
-                                me.netBody.StopPiggyback();
+                        NetBody riding = mine.piggybacking_on;
+                        NetBody carried = mine.carrying_person;
+                        if (riding != null) {
+                            if (UIBullshit._GUI_FocusableButton(new Rect(Screen.width * 0.5f - wdth2 / 2, Screen.height * 0.9f - 10 * uisc, wdth2, pgbkbutton_hght), Lang.Get("piggyback_stop") + "\n" + riding.bodyName, out bool focused)) {
+                                mine.StopPiggyback();
                             }
                             interaction_menu_focused = interaction_menu_focused || focused;
-                        } else if (me.netBody.carrying_person != null) {
-                            if (UIBullshit._GUI_FocusableButton(new Rect(Screen.width * 0.5f - wdth2 / 2, Screen.height * 0.9f - 10 * uisc, wdth2, pgbkbutton_hght), Lang.Get("carry_stop") + "\n" + me.netBody.carrying_person.bodyName, out bool focused)) {
-                                me.netBody.carrying_person.SetNetIgnoreTime(0.2f);
+                        } else if (carried != null) {
+                            if (UIBullshit._GUI_FocusableButton(new Rect(Screen.width * 0.5f - wdth2 / 2, Screen.height * 0.9f - 10 * uisc, wdth2, pgbkbutton_hght), Lang.Get("carry_stop") + "\n" + carried.bodyName, out bool focused)) {
+                                carried.SetNetIgnoreTime(0.2f);
+                                // 房主本地发包会同步清空 mine.carrying_person，提前缓存 carried 引用避免空指针
                                 Multiplayer.Client_SendSimpleMessageToServer((byte)NetmsgId.SERVER_RequestStopCarryPerson);
-                                me.netBody.carrying_person.StopPiggyback();
+                                if (carried.piggybacking_on != null) {
+                                    carried.StopPiggyback();
+                                }
                             }
                             interaction_menu_focused = interaction_menu_focused || focused;
                         }

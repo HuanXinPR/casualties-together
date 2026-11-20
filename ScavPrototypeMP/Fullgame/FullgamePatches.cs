@@ -340,6 +340,7 @@ static class GuardHost {
     }
 
     static readonly Dictionary<int, Sent> Last = new Dictionary<int, Sent>();
+    static int _lastPruneAt = StaleIds.FirstThreshold;
 
     [CTPostInit]
     static void Init() {
@@ -405,6 +406,7 @@ static class GuardHost {
             return;
         }
         int key = guard.GetInstanceID();
+        StaleIds.Prune<GuardScript, Sent>(Last, ref _lastPruneAt);
         int ammo = Traverse.Create(guard).Field("ammo").GetValue<int>();
         bool melee = guard.doingMelee;
         bool dead = false;

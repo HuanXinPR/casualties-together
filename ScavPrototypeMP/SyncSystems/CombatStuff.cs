@@ -259,6 +259,9 @@ public static class Body_UseItemInHand_MultiplayerPatch {
     internal static void AnnouncePredictedUse(ushort itemId, knetid bodyNet) => CombatItemUseSync.AnnouncePredictedUse(itemId, bodyNet);
 
     public static bool Prefix(Body __instance) {
+        if (Net.IsRunning && HeadpatSession.Blocks(__instance)) {
+            return false;
+        }
         _hostLight = false;
         if (!Util.IsWorldGenerated()) {
             return false;
@@ -327,6 +330,9 @@ public static class Body_UseItem_MultiplayerPatch {
     internal static void SendLightMode(SyncInfo si, NetBody nb) => CombatItemUseSync.SendLightMode(si, nb);
 
     public static bool Prefix(Body __instance, ref SyncInfo __state, Item item) {
+        if (Net.IsRunning && HeadpatSession.Blocks(__instance)) {
+            return false;
+        }
         current_used_item = item;
         __state = null;
 
@@ -400,6 +406,10 @@ public static class Body_Attack_MultiplayerPatch {
     // fastest swing in the game is the little laser, cooldown 0.1. that one is not a physical swing, so stims do not shorten it. 0.08 is a bit quicker than that.
     const float AttackGapLimit = 0.08f;
     static readonly Dictionary<knetid, double> LastAttackAt = new Dictionary<knetid, double>();
+
+    public static void Forget(knetid client) {
+        LastAttackAt.Remove(client);
+    }
 
     public static void DoToolSpecificPVPDamage(Item used_tool, Limb target, float rule_mult, float multiplier_strength_vs_armor) {
         switch (used_tool.id) {
@@ -723,6 +733,7 @@ public static class Body_Attack_MultiplayerPatch {
         public AttackInfo atk;
         public Body body;
         public float atkpwr;
+        public bool forceHitResult;
     }
 
     // return true if its not a body
@@ -990,6 +1001,8 @@ public static class Body_Attack_MultiplayerPatch {
 
     static bool LastAttackResult = false;
     public static bool ForceOnlyStaminaUse = false;
+    // 服务端重演客户端已确认命中的挥击时置位，确保重演返回 true 以正常扣除工具耐久
+    public static bool ForceHitResult = false;
     public static bool ForceOnlyRetrieveAttackInfo = false;
 
     static bool Prefix(Body __instance, ref bool __result, ref AttackInfo atk, int slot, ref _MyAttackState __state) {
@@ -1006,7 +1019,9 @@ public static class Body_Attack_MultiplayerPatch {
             atk = atk,
             atkpwr = CalculateAttackPower(__instance, LastAttackInfo),
             body = __instance,
+            forceHitResult = ForceHitResult,
         };// only possible thing to change that i dont really want for remote peers
+        ForceHitResult = false;
 
 
 
@@ -1032,7 +1047,8 @@ public static class Body_Attack_MultiplayerPatch {
         }
 
 
-        if (__instance.conscious && __instance.attackCooldown <= 0f) { // actually attacking 
+        // Headpat 抚摸点击并非挥击，禁止标记为攻击广播以防工具被重复触发
+        if (!(Net.IsRunning && HeadpatSession.Blocks(__instance)) && __instance.conscious && __instance.attackCooldown <= 0f) { // actually attacking 
             __state.candoattack = true;
 
             if (Net.IsRunning && Util.IsWorldGenerated()) {
@@ -1051,7 +1067,15 @@ public static class Body_Attack_MultiplayerPatch {
         return true;
     }
     static void Postfix(Body __instance, ref bool __result, AttackInfo atk, int slot, ref _MyAttackState __state) {
+        if (__state != null && Net.IsRunning && HeadpatSession.Blocks(__instance)) {
+            __state.candoattack = false;
+        }
         LastAttackResult = __result;
+
+        // 本模组接管结算的本地命中，或服务端确认有效的重演挥击，均视为有效命中以正常扣除工具耐久
+        if ((breakTheAttackLoop && Util.IsBodyLocal(__instance)) || (__state != null && __state.forceHitResult)) {
+            __result = true;
+        }
 
         StaticHitValidation = false;
         breakTheAttackLoop = false;
@@ -1360,6 +1384,7 @@ public static class Body_Attack_MultiplayerPatch {
             plr.body.targetLookPos = targetlookpos;
             try {
                 Body_Attack_MultiplayerPatch.hostRerunAttacker = plr.body;
+                Body_Attack_MultiplayerPatch.ForceHitResult = didhitconfirmed;
                 if (tool_si == null) {
                     plr.body.Attack(CombatStuff.default_unarmed_attackinfo, plr.body.handSlot);
                 } else {
@@ -1367,6 +1392,7 @@ public static class Body_Attack_MultiplayerPatch {
                 }
             } finally {
                 Body_Attack_MultiplayerPatch.hostRerunAttacker = null;
+                Body_Attack_MultiplayerPatch.ForceHitResult = false;
             }
 
             if (!LastAttackResult && // if the flag wasnt true
@@ -3013,34 +3039,6 @@ internal class CombatStuff : CasualtiesTogetherSingleton {
                         return false;
                     }
                 }
-            }
-        } else { // is legs or arms 
-            if (limb.body.alive) { // if theyre alive dont allow amputating more than once (arms and legs separate). to keep at least one set of limbs full and keep the game playable 
-
-                bool any_leg_removed = false;
-                for (int i = (int)Body.LimbNum.LegF; i < 15; i++) {
-                    if (limb.body.limbs[i].dismembered) {
-                        any_leg_removed = true;
-                        break;
-                    }
-                }
-
-                bool any_arm_removed = false;
-                for (int i = (int)Body.LimbNum.ArmF; i < (int)Body.LimbNum.LegF; i++) {
-                    if (limb.body.limbs[i].dismembered) {
-                        any_arm_removed = true;
-                        break;
-                    }
-                }
-
-                if (limb.isArm && any_arm_removed) {
-                    return false;
-                }
-
-                if (limb.isLegLimb && any_leg_removed) {
-                    return false;
-                }
-
             }
         }
         return true;

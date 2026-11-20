@@ -3,7 +3,7 @@
   
 	<PropertyGroup>
 
-		<ModVersion>5.5.3</ModVersion>
+		<ModVersion>5.5.4</ModVersion>
 		<FullModVersion>$(ModVersion)</FullModVersion>
 
 		<SlnRoot Condition="'$(SolutionDir)' != '' and '$(SolutionDir)' != '*Undefined*'">$(SolutionDir)</SlnRoot>

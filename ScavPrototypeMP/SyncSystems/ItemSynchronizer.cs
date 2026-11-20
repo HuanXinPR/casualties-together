@@ -1467,7 +1467,8 @@ public static class Body_CombineItems_MultiplayerPatch {
             return true;
         }
         if ((bool)it1.GetComponent<GunScript>() && (bool)it2.GetComponent<AmmoScript>()) {
-            it1.GetComponent<GunScript>().LoadMag(it2.GetComponent<AmmoScript>());
+            // 原版 GunScript.LoadMag 硬编码检查 PlayerCamera.main.body.charType == 1，服务端代执行时会误读房主物种导致 Milky 客户端无法整盒装填霰弹枪
+            LoadMag(combinerguy, it1.GetComponent<GunScript>(), it2.GetComponent<AmmoScript>());
             return true;
         }
         if ((bool)it1.GetComponent<AmmoScript>() && (bool)it2.GetComponent<AmmoScript>()) {
@@ -1491,6 +1492,37 @@ public static class Body_CombineItems_MultiplayerPatch {
             cont.UnloadItem(it1);
         }
         return true;
+    }
+
+    // 对齐原版 GunScript.LoadMag 全部装填分支，但将 Milky 直装判定绑定到实际操作者 who 而非本地相机角色
+    static void LoadMag(Body who, GunScript gun, AmmoScript ammo) {
+        if (gun == null || ammo == null || ammo.ammoType != gun.ammoType) {
+            return;
+        }
+        if (gun.racked && gun.roundInChamber == GunScript.RoundInChamber.None && ammo.itemType == AmmoScript.AmmoItemType.Round) {
+            gun.roundInChamber = GunScript.RoundInChamber.Round;
+            Sound.Play("gunloadshell", gun.transform.position);
+            UnityEngine.Object.Destroy(ammo.gameObject);
+        } else if (!gun.hasMag && gun.feedType == GunScript.FeedType.Mag && ammo.itemType == AmmoScript.AmmoItemType.Magazine) {
+            gun.hasMag = true;
+            gun.roundsInMag = ammo.rounds;
+            Sound.Play("gunloadmag", gun.transform.position);
+            UnityEngine.Object.Destroy(ammo.gameObject);
+        } else if (gun.feedType == GunScript.FeedType.Direct && ammo.itemType == AmmoScript.AmmoItemType.Round && gun.roundsInMag < gun.magCapacity) {
+            gun.roundsInMag++;
+            Sound.Play("gunloadshell", gun.transform.position);
+            UnityEngine.Object.Destroy(ammo.gameObject);
+        } else if (gun.feedType == GunScript.FeedType.Direct && ammo.itemType == AmmoScript.AmmoItemType.Magazine && who != null && who.charType == 1 && ammo.rounds > 0) {
+            if (gun.racked && gun.roundInChamber == GunScript.RoundInChamber.None) {
+                gun.roundInChamber = GunScript.RoundInChamber.Round;
+                ammo.rounds--;
+                Sound.Play("gunloadshell", gun.transform.position);
+            } else if (gun.roundsInMag < gun.magCapacity) {
+                gun.roundsInMag++;
+                ammo.rounds--;
+                Sound.Play("gunloadshell", gun.transform.position);
+            }
+        }
     }
 
 
@@ -2472,7 +2504,8 @@ internal class ItemSync : CasualtiesTogetherSingleton {
     }
 
     internal static void SpentDestroy(Item item) {
-        if (!Net.IsServer || item == null || item.condition > 0f)
+        // 断线复位后 Net.Type 可能重置为 Host 但会话已停，必须先检查 Net.IsRunning 防止单机/退房残余世界误跑服务端销毁
+        if (!Net.IsRunning || !Net.IsServer || item == null || item.condition > 0f)
             return;
         if (item.Stats == null || !item.Stats.destroyAtZeroCondition)
             return;
@@ -2480,18 +2513,26 @@ internal class ItemSync : CasualtiesTogetherSingleton {
         if (GravBagBoom.Armed(item, item.condition))
             return;
         if (item.TryGetComponent(out Container box)) {
-            ParentTestChest("chest spill host", item, item.gameObject);
-            box.ContainerBroke();
-            if (NetObjectRegistry.TryGetSyncInfo(item.gameObject, out SyncInfo bag) && bag != null && !bag.IsDestroyed) {
-                // spilled items still store this id. clearing it is what stops the next spawn inheriting the bag.
-                ReleaseNamedContents(bag);
-                bag.Destroy();
-            } else {
-                UnityEngine.Object.Destroy(item.gameObject, 0.05f);
+            try {
+                ParentTestChest("chest spill host", item, item.gameObject);
+                box.ContainerBroke();
+                if (NetObjectRegistry.TryGetSyncInfo(item.gameObject, out SyncInfo bag) && bag != null && !bag.IsDestroyed) {
+                    // spilled items still store this id. clearing it is what stops the next spawn inheriting the bag.
+                    ReleaseNamedContents(bag);
+                    bag.Destroy();
+                } else {
+                    UnityEngine.Object.Destroy(item.gameObject, 0.05f);
+                }
+            } catch (Exception ex) {
+                log.error("[join] spent bag " + item.id + " " + ex.Message);
             }
             return;
         }
-        UnityEngine.Object.Destroy(item.gameObject);
+        try {
+            UnityEngine.Object.Destroy(item.gameObject);
+        } catch (Exception ex) {
+            log.error("[join] spent item " + item.id + " " + ex.Message);
+        }
     }
 
     internal static void ReleaseNamedContents(SyncInfo bag) {
@@ -2695,6 +2736,11 @@ internal class ItemSync : CasualtiesTogetherSingleton {
                     sound_name = "gunloadmag";
                 } else if (gun.feedType == GunScript.FeedType.Direct && ammo.itemType == AmmoScript.AmmoItemType.Round && gun.roundsInMag < gun.magCapacity) {
                     sound_name = "gunloadshell";
+                } else if (gun.feedType == GunScript.FeedType.Direct && ammo.itemType == AmmoScript.AmmoItemType.Magazine && ammo.rounds > 0) {
+                    bool room = gun.roundsInMag < gun.magCapacity || (gun.racked && gun.roundInChamber == GunScript.RoundInChamber.None);
+                    if (room && ScavPlayer.TryGetPlayerAndBodyFromClientId(combinerguyguy, out _, out Body combiner) && combiner != null && combiner.charType == 1) {
+                        sound_name = "gunloadshell";
+                    }
                 }
             }
         } else if ((bool)ammo1 && (bool)ammo2) {

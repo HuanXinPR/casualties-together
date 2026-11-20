@@ -342,7 +342,16 @@ internal static class FixInvSync
                     continue;
                 }
                 if (info.go == null)
-                    info.CreateObject();
+                {
+                    try
+                    {
+                        info.CreateObject();
+                    }
+                    catch (Exception ex)
+                    {
+                        OptimizerMain.Log?.LogError("[join] create failed " + ex.Message);
+                    }
+                }
                 if (info.go == null)
                     continue;
                 if (info.item == null)
@@ -508,7 +517,16 @@ internal static class FixInvSync
             if (info.container_data1.Value == 0)
                 continue;
             if (info.go == null)
-                info.CreateObject();
+            {
+                try
+                {
+                    info.CreateObject();
+                }
+                catch (Exception ex)
+                {
+                    OptimizerMain.Log?.LogError("[join] create failed " + ex.Message);
+                }
+            }
             if (info.go == null || info.item == null || Placed(info))
                 continue;
             if (Enqueue(info))
@@ -713,7 +731,17 @@ internal static class FixInvSync
         {
             if (!ContainerLink.TryBody(info, out _))
                 return false;
-            _apply(info);
+            if (info.go == null || info.item == null)
+                return false;
+            try
+            {
+                _apply(info);
+            }
+            catch (Exception ex)
+            {
+                OptimizerMain.Log?.LogError("[join] parent slot failed " + info.item.id + " net=" + net + " " + ex.Message);
+                return false;
+            }
             return Placed(info);
         }
         SyncInfo bag = FindBag(net, ver, out Container box);
@@ -724,8 +752,18 @@ internal static class FixInvSync
             ItemSync.ParentTestChest("chest skip retry", info.item, bag.go);
             return false;
         }
-        // 直接调用同程序集 ItemSync.Container_ForceLoadItem，消除 object[] 数组装箱反射
-        ItemSync.Container_ForceLoadItem(info.item, box);
+        if (info.item == null || box == null)
+            return false;
+        // 直接调用同程序集 ItemSync.Container_ForceLoadItem，消除 object[] 数组装箱反射，并保留外层容错日志
+        try
+        {
+            ItemSync.Container_ForceLoadItem(info.item, box);
+        }
+        catch (Exception ex)
+        {
+            OptimizerMain.Log?.LogError("[join] parent bag failed " + info.item.id + " net=" + net + " " + ex.Message);
+            return false;
+        }
         return Placed(info);
     }
 
