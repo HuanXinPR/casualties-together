@@ -223,13 +223,22 @@ static class WorldGenerationSetBlockNoUpdatePatch {
 }
 
 /// <summary>
-/// 防御客户端进图首帧原版 <see cref="WorldGeneration.Update"/> 未检查 <c>generatingWorld</c> 即触发开场地震调用
-/// <c>SetBlock -&gt; UpdateChunkClosest -&gt; UpdateChunk</c>（此时 <c>chunks</c> 与 <c>worldBlocks</c> 尚未分配导致 <see cref="NullReferenceException"/>）。
+/// 防御客户端等待世界生成参数或首帧进图期间原版 <see cref="WorldGeneration.Update"/> 未检查 <c>generatingWorld</c> 即触发地震调用
+/// <c>SetBlock -&gt; UpdateChunkClosest -&gt; UpdateChunk(Vector2Int chunk)</c>（此时二维数组 <c>chunks</c> 虽已分配但 <c>InstantiateChunks()</c> 尚未填充元素，解引用 <c>chunks[chunk.x, chunk.y]</c> 必抛 <see cref="NullReferenceException"/>）。
 /// </summary>
 [HarmonyPatch(typeof(WorldGeneration), nameof(WorldGeneration.UpdateChunk), new[] { typeof(Vector2Int) })]
-static class WorldGeneration_UpdateChunk_NullGuardPatch {
-    static bool Prefix(WorldGeneration __instance) {
-        return __instance != null && __instance.chunks != null && __instance.worldBlocks != null;
+public static class WorldGeneration_UpdateChunk_NullGuardPatch {
+    public static bool Prefix(WorldGeneration __instance, [HarmonyArgument(0)] Vector2Int chunk) {
+        if (__instance == null || __instance.chunks == null || __instance.worldBlocks == null) {
+            return false;
+        }
+        Vector2Int c = chunk;
+        int cx = c.x;
+        int cy = c.y;
+        if (cx < 0 || cy < 0 || cx >= __instance.chunks.GetLength(0) || cy >= __instance.chunks.GetLength(1)) {
+            return false;
+        }
+        return __instance.chunks[cx, cy] != null;
     }
 }
 [HarmonyPatch(typeof(WorldGeneration), nameof(WorldGeneration.SetBlock), new[] { typeof(Vector2Int), typeof(ushort) })]
