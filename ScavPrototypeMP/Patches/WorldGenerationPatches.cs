@@ -214,8 +214,22 @@ static class WorldGeneration_Start_MultiplayerPatch {
 [HarmonyPatch(typeof(WorldGeneration), nameof(WorldGeneration.SetBlockNoUpdate))]
 static class WorldGenerationSetBlockNoUpdatePatch {
     static bool Prefix(WorldGeneration __instance, Vector2Int pos, ushort block) {
+        if (__instance == null || __instance.worldBlocks == null) {
+            return false;
+        }
         WorldGeneration_SetBlock_MultiplayerPatch.QueueBlockChange(__instance, pos, block, true);
         return true;
+    }
+}
+
+/// <summary>
+/// 防御客户端进图首帧原版 <see cref="WorldGeneration.Update"/> 未检查 <c>generatingWorld</c> 即触发开场地震调用
+/// <c>SetBlock -&gt; UpdateChunkClosest -&gt; UpdateChunk</c>（此时 <c>chunks</c> 与 <c>worldBlocks</c> 尚未分配导致 <see cref="NullReferenceException"/>）。
+/// </summary>
+[HarmonyPatch(typeof(WorldGeneration), nameof(WorldGeneration.UpdateChunk), new[] { typeof(Vector2Int) })]
+static class WorldGeneration_UpdateChunk_NullGuardPatch {
+    static bool Prefix(WorldGeneration __instance) {
+        return __instance != null && __instance.chunks != null && __instance.worldBlocks != null;
     }
 }
 [HarmonyPatch(typeof(WorldGeneration), nameof(WorldGeneration.SetBlock), new[] { typeof(Vector2Int), typeof(ushort) })]
@@ -284,6 +298,9 @@ public static class WorldGeneration_SetBlock_MultiplayerPatch {
     }
 
     static bool Prefix(WorldGeneration __instance, Vector2Int pos, ushort block) {
+        if (__instance == null || __instance.worldBlocks == null) {
+            return false;
+        }
         QueueBlockChange(__instance, pos, block, false);
         return true;
     }

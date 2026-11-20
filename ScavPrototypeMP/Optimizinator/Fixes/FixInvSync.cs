@@ -51,6 +51,7 @@ internal static class FixInvSync
     private static readonly List<SyncInfo> Batch = new List<SyncInfo>(256);
     private static readonly HashSet<SyncInfo> Seen = new HashSet<SyncInfo>();
     private static readonly Dictionary<int, Wait> Pending = new Dictionary<int, Wait>();
+    private static readonly List<KeyValuePair<int, Wait>> PendingUpdates = new List<KeyValuePair<int, Wait>>();
     private static readonly Dictionary<int, Fingerprint> Exhausted = new Dictionary<int, Fingerprint>();
     private static readonly Dictionary<ushort, byte> SeenContainerVer = new Dictionary<ushort, byte>();
     private static readonly List<int> Done = new List<int>();
@@ -114,7 +115,14 @@ internal static class FixInvSync
         if (info == null || info.item == null)
             return;
         int id = info.item.GetInstanceID();
-        Pending.Remove(id);
+        if (_ticking)
+        {
+            Done.Add(id);
+        }
+        else
+        {
+            Pending.Remove(id);
+        }
         Exhausted.Remove(id);
     }
 
@@ -299,6 +307,7 @@ internal static class FixInvSync
                 _wasInGame = false;
                 _sweepQuiet = false;
                 Pending.Clear();
+                PendingUpdates.Clear();
                 Exhausted.Clear();
             }
             return;
@@ -316,6 +325,7 @@ internal static class FixInvSync
         if (Pending.Count == 0)
             return;
         Done.Clear();
+        PendingUpdates.Clear();
         float now = Time.realtimeSinceStartup;
         // _ticking lets KeepHeld run stock during this reapply. without it, data==1 would skip the apply we just asked for.
         _ticking = true;
@@ -353,7 +363,8 @@ internal static class FixInvSync
                 if (!wait.Fp.Matches(data, net, ver))
                 {
                     wait = NewWait(info, data, net, ver);
-                    Pending[key] = wait;
+                    // Unity Mono BCL 下在 foreach 期间向 Dictionary 覆盖已有键同样会递增 _version 触发 InvalidOperationException，统一暂存至循环后写回
+                    PendingUpdates.Add(new KeyValuePair<int, Wait>(key, wait));
                 }
                 bool missing = TargetMissing(info);
                 bool stale = StaleVersion(info);
@@ -388,8 +399,18 @@ internal static class FixInvSync
         {
             _ticking = false;
         }
+        for (int i = 0; i < PendingUpdates.Count; i++)
+        {
+            KeyValuePair<int, Wait> upd = PendingUpdates[i];
+            if (Pending.ContainsKey(upd.Key))
+            {
+                Pending[upd.Key] = upd.Value;
+            }
+        }
+        PendingUpdates.Clear();
         for (int i = 0; i < Done.Count; i++)
             Pending.Remove(Done[i]);
+        Done.Clear();
     }
 
     // host. detect body/bag Version changes that LES can bump without going through our construct hooks.
