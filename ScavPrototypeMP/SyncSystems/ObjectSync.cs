@@ -1069,6 +1069,10 @@ public class NetObjectRegistry : CasualtiesTogetherSingleton {
 
     public static SyncInfo Server_EnsureItemIsNetworkRegistered(GameObject go) {
         try {
+            // 退房或场景卸载期间 Net.ShutdownReset 已清空 ServerEntityManager 但 Type 复位为 Host，须先校验会话存活与实体管理器非空
+            if (go == null || !Net.IsRunning || !Net.IsServer || Net.ServerEntityManager == null) {
+                return null;
+            }
             if (SyncRegistry.TryGetValue(go, out var v) && v != null && !v.IsDestroyed) {
                 return v;
             }

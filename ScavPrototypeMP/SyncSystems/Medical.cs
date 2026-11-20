@@ -2498,6 +2498,10 @@ internal class MedicalSync : CasualtiesTogetherSingleton {
 
     internal static ECGVisualizer woundview_ecg = null;
     void LateUpdate() {
+        if (!Net.IsRunning) {
+            stolenformp_lastHeartBeating = false;
+            return;
+        }
 
         UpdateCPREffects();
 
