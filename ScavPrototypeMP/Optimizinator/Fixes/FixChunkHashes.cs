@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Reflection.Emit;
 using HarmonyLib;
 using Together;
@@ -6,19 +8,38 @@ using Together;
 namespace KrokV5Optimization;
 
 /// <summary>
-/// every server frame replaced the chunk-hash grid. 0 already means empty, so clear the existing grid.
+/// 复用 <see cref="WorldChunkSync.Server_ChunkHashes"/> 二维哈希网格，避免服务端每帧重新分配 <c>uint[,]</c> 数组（0 值天然代表未计算的空槽）。
+/// <para>
+/// <c>WorldChunkSync.LateUpdate</c> 已在源码层直接内联调用 <see cref="Rent"/>；
+/// 此处补齐显式目标声明并在 <see cref="Prepare"/> 中检测当已无待替换 <c>uint[,]</c> 构造时安全跳过，彻底消除空目标方法异常与冗余 DMD 生成。
+/// </para>
 /// </summary>
-internal static class FixChunkHashes
+[HarmonyPatch(typeof(WorldChunkSync), "LateUpdate")]
+public static class FixChunkHashes
 {
-	internal static long Reused;
+	public static long Reused;
 
-	// this file's counters on the 10s report.
+	/// <summary>周期性优化统计报告计数器。</summary>
 	internal static string Evidence() => "chunkHash=" + Reused;
 
-	// replace `new uint[w, h]` inside LateUpdate with Rent. other newobj calls stay.
+	static bool Prepare()
+	{
+		MethodInfo target = AccessTools.Method(typeof(WorldChunkSync), "LateUpdate");
+		if (target == null)
+			return false;
+
+		foreach (CodeInstruction inst in PatchProcessor.GetCurrentInstructions(target))
+		{
+			if (inst.opcode == OpCodes.Newobj && IsGridCtor(inst.operand))
+				return true;
+		}
+		return false;
+	}
+
+	/// <summary>将 <c>LateUpdate</c> 内针对二维 <c>uint[,]</c> 网格的 <c>newobj</c> 替换为 <see cref="Rent"/>，其余分配保持原样。</summary>
 	static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
 	{
-		var rent = AccessTools.Method(typeof(FixChunkHashes), nameof(Rent));
+		MethodInfo rent = AccessTools.Method(typeof(FixChunkHashes), nameof(Rent));
 		foreach (CodeInstruction instruction in instructions)
 		{
 			if (instruction.opcode == OpCodes.Newobj && IsGridCtor(instruction.operand))
@@ -30,24 +51,23 @@ internal static class FixChunkHashes
 		}
 	}
 
-	// true only for the 2d uint chunk-hash grid, not every array LateUpdate allocates.
 	static bool IsGridCtor(object operand)
 	{
-		if (!(operand is System.Reflection.ConstructorInfo ctor))
+		if (!(operand is ConstructorInfo ctor))
 			return false;
-		System.Type type = ctor.DeclaringType;
+		Type type = ctor.DeclaringType;
 		return type != null
 		       && type.IsArray
 		       && type.GetArrayRank() == 2
 		       && type.GetElementType() == typeof(uint);
 	}
 
-	internal static uint[,] Rent(int width, int height)
+	public static uint[,] Rent(int width, int height)
 	{
 		uint[,] grid = WorldChunkSync.Server_ChunkHashes;
 		if (grid == null || grid.GetLength(0) != width || grid.GetLength(1) != height)
 			return new uint[width, height];
-		System.Array.Clear(grid, 0, grid.Length);
+		Array.Clear(grid, 0, grid.Length);
 		Reused++;
 		return grid;
 	}
