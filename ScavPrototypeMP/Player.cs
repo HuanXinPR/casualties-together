@@ -548,7 +548,7 @@ namespace Together {
                 }
             }
 
-            // 先为 Retro GamingPix 挂载系统动态 Unicode 回退字体表，使后续 ReplaceMissingCharacters(HasCharacter(..., true)) 原生识别中文/俄文/日韩文而不替换为 '?'
+            // 先为 Retro GamingPix 挂载系统动态 Unicode 回退字体表，使后续 ReplaceMissingCharacters(HasCharacter(..., true, true)) 原生烘焙识别中文/俄文/日韩文而不替换为 '?'
             {
                 if (s_retroGamingFontAsset == null) {
                     IEnumerable<TMP_FontAsset> ggggfd = GameObject.FindObjectsOfType<TextMeshProUGUI>(true).Select(x => x.font);

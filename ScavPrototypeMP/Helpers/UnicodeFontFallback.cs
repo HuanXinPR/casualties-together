@@ -14,7 +14,7 @@ namespace Together {
     /// <para>
     /// <b>设计动机与引擎契约：</b><br/>
     /// 1. 模组内置像素字体 <c>"Retro GamingPix"</c> 仅包含 ASCII 字形，<see cref="ScavPlayer.ApplyNameAndColor"/> 调用的
-    /// <see cref="FontUtils.ReplaceMissingCharacters(TMP_FontAsset, string)"/> 内部执行 <c>font.HasCharacter(c, true)</c>（递归查询 <c>fallbackFontAssetTable</c>），
+    /// <see cref="FontUtils.ReplaceMissingCharacters(TMP_FontAsset, string)"/> 内部执行 <c>font.HasCharacter(c, true, true)</c>（递归查询 <c>fallbackFontAssetTable</c> 并按需动态烘焙），
     /// 缺失回退表时会将所有中文/俄文/日韩文字符替换为 <c>'?'</c>。<br/>
     /// 2. Unity 2022 中 <see cref="Font.CreateDynamicFontFromOSFont(string[], int)"/> 返回的内存句柄不含磁盘路径与内嵌 TTF 流，
     /// 传给 <see cref="TMP_FontAsset.CreateFontAsset(Font)"/> 会因 <c>FontEngine.LoadFontFace</c> 失败永远返回 <c>null</c>；
