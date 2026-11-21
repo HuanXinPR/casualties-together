@@ -1,10 +1,31 @@
-"Casualties: Together" Co-Op Mod
-Official link: https://github.com/creaturefeaturelarry/casualties-together
+"Casualties: Together" Co-Op Mod (Patched Build)
+Repository: https://github.com/HuanXinPR/casualties-together
+Upstream:   https://github.com/creaturefeaturelarry/casualties-together
 Support the developer: https://buymeacoffee.com/casualtiestogether
 
 
 KNOWN ISSUES:
  - This mod is ass :crying_emoji:
+
+
+ --- 5.5.4 (Patched) --- 21.11.2026 --- Upstream v5.5.4 Sync, Bugfixes & Zero-Secret CI --- 
+- Upstream v5.5.4 Synchronization (wire-compatible with 1.0.2_MPv5.5.4)
+	Added Lobby Host Transfer (together.host-transfer.v2) to migrate sessions when the host disconnects
+	Added rule categories, search/filtering, and in-game language selector
+	Added rule TraderReviveAsSpecies and off-hand sync (_offHand)
+	Synced CrystalEnemy poses/streaks, fragile blocks, GrabberPlant IK & yank, FanTrap, CeilingTurret, Xaloris, TrackerSoundCannon, and trader combat/death guilt
+	Decoupled CUCoreLib and Skins module dependencies while preserving full wire compatibility
+- Patched Branch Stability & Gameplay Fixes
+	Added backward-compatible UseAck handshake probe and ScrapEater scrap item locking
+	Added NonDescriptCanSync (mystery canned food contents) and StimulantSync
+	Fixed Fullgame prosthesis repair hole counts and medical interaction range
+	Added inventory drag/swap/switch-hand Finalizers to prevent locked slots on exceptions
+	Fixed GunScript lazy component initialization NREs, CaveTickSpawner server-authoritative scan, and death screen tooltip visibility
+	Added Unicode player/server name support, dynamic OS font TMP fallback, and completed EN / es-ES / ru-RU / zh-CN / zh-TW localizations (706 keys)
+	Added singleplayer passthrough guards across patches so singleplayer runs remain untouched when offline
+- Packaging & Build System
+	Flattened release zip layout directly to BepInEx/plugins/Together/ (extract straight into game root; removed legacy mod/ subfolder and autoupdater_patcher.dll)
+	Added stripped metadata reference stubs (references/*.dll) and automated GitHub Actions Release / +debug / nightly workflows
  
 
  --- 5.2.0 --- 29.10.2026 --- V5 Extra optimization --- 
@@ -494,7 +515,7 @@ Special thanks for participation goes to:
  - avr - @avr_crtscc  - playtester
  - ItsVoidSK - @itsvoidskilled  - playtester
  - {Pixel} - @canned_pixels  - playtester
- - Μπΰκ 2.0 - @mrakmm  - playtester
+ - ΠΡ€Π°ΠΊ 2.0 - @mrakmm  - playtester
  - Shade - @waz2280  - playtester
  - Dictator - @snow_5107  - playtester
 

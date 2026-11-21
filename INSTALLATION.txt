@@ -1,49 +1,59 @@
-"Casualties: Together" Co-Op Mod
-Official link: https://github.com/creaturefeaturelarry/casualties-together
-Support the developer: https://buymeacoffee.com/casualtiestogether
+"Casualties: Together" Co-Op Mod (Patched Build)
+Repository: https://github.com/HuanXinPR/casualties-together
+Upstream:   https://github.com/creaturefeaturelarry/casualties-together
+Support upstream developer: https://buymeacoffee.com/casualtiestogether
 
 
-1. Download BepInEx from:   https://github.com/BepInEx/BepInEx/releases/download/v5.4.23.5/BepInEx_win_x64_5.4.23.5.zip
+=== INSTALLATION ===
 
-2. Go to Game directory:
+1. Download BepInEx 5.4.23.5 (win_x64):
+   https://github.com/BepInEx/BepInEx/releases/download/v5.4.23.5/BepInEx_win_x64_5.4.23.5.zip
+
+2. Open the game root directory:
  - Open Steam
- - Right click on the game
- - Click: Manage > Browse Local Files
- - Now you opened the game root directory
+ - Right-click "Casualties: Unknown"
+ - Click: Manage > Browse local files
 
-3. Unzip BepInEx in the game root directory.
+3. Extract BepInEx_win_x64_5.4.23.5.zip directly into the game root directory.
 
-4. Unzip MP Mod (you've already done it)
+4. Extract CasualtiesTogether-v*.zip directly into the game root directory.
+   (The zip already starts with BepInEx/plugins/Together/ — merge it into the game root.)
+   * Quick update note: If you already installed the full zip before, you can also update by replacing BepInEx/plugins/Together/CasualtiesMP.dll with the standalone CasualtiesMP.dll from Releases.
 
-5. Move the contents of "mod" folder into the game root directory.
-
-Now it should look like this:
-  CasualtiesUnknown/
+Your game root directory should look like this:
+  Casualties Unknown/
     - CasualtiesUnknown.exe
     - UnityPlayer.dll
     - UnityCrashHandler64.exe
     - CasualtiesUnknown_Data/
     - MonoBleedingEdge/
-    - winhttp.dll  <-  from BepInEx zip
+    - doorstop_config.ini              <- from BepInEx zip
+    - winhttp.dll                      <- from BepInEx zip
     - BepInEx/
-    - - plugins/
-    - - - Together/                    <-  from mod zip
-    - - - - CasualtiesMP.dll
-    - - - - LiteEntitySystem.dll
-    - - - - LiteNetLib.dll
-    - - - - OpusSharp.Core.dll
-    - - - - ... and so on ...
-    - - patchers/
-    - - - autoupdater_patcher.dll      <-  from mod zip
-    - - core/                    <-  from BepInEx zip
-    - - ... and so on...
+      - core/                          <- from BepInEx zip
+      - plugins/
+        - Together/                    <- from CasualtiesTogether-v*.zip
+          - CasualtiesMP.dll
+          - K4os.Compression.LZ4.dll
+          - LiteEntitySystem.dll
+          - LiteNetLib.dll
+          - OpusSharp.Core.dll
+          - opus.dll
+          - RefMagic.dll
+          - System.Runtime.CompilerServices.Unsafe.dll
 
-6. Launch the game through Steam.
+5. Launch the game through Steam.
+   (Linux / Proton users: set Steam Launch Options to WINEDLLOVERRIDES="winhttp=n,b" %command%)
 
-7. MP button should appear at the bottom.
+6. Multiplayer buttons will appear at the bottom of the main menu.
 
 
-Didn't work? Found bugs? Wanna find friends? Join our discord:
- Casualties: Together Mod Discord:     https://discord.gg/7K6J6bhV8b
+=== CROSS-BUILD LOBBY COMPATIBILITY (VERIFY GAME HASH) ===
+
+"Verify Game Hash" (enabled by default in host server settings) compares binary hashes of Assembly-CSharp.dll and CasualtiesMP.dll.
+If players in the same lobby mix upstream v5.5.4 builds, this patched build, +debug builds, or nightly builds, the host should UNCHECK "Verify Game Hash" in the server settings panel so everyone with matching protocol version (1.0.2_MPv5.5.4) can join smoothly.
+
+
+Didn't work? Found bugs? Wanna find friends? Join Discord:
+ Casualties: Together Mod Discord:     https://discord.gg/SA6H7mA6De
  Casualties: Unknown Official Discord: https://discord.gg/targetplanet
-

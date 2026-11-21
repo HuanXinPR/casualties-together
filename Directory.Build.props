@@ -8,8 +8,9 @@
 
 		<SlnRoot Condition="'$(SolutionDir)' != '' and '$(SolutionDir)' != '*Undefined*'">$(SolutionDir)</SlnRoot>
 		<SlnRoot Condition="'$(SlnRoot)' == ''">$(MSBuildThisFileDirectory)</SlnRoot>
+		<SlnRoot>$([MSBuild]::EnsureTrailingSlash('$(SlnRoot)'))</SlnRoot>
 
-		<OutputDir>$(SlnRoot)\build\artifacts\$(MSBuildProjectName)</OutputDir>
+		<OutputDir>$(SlnRoot)build\artifacts\$(MSBuildProjectName)</OutputDir>
 		<BaseOutputPath>$(OutputDir)\bin</BaseOutputPath>
 		<BaseIntermediateOutputPath>$(OutputDir)\obj</BaseIntermediateOutputPath>
 		<MSBuildProjectExtensionsPath>$(BaseIntermediateOutputPath)</MSBuildProjectExtensionsPath>
@@ -56,9 +57,7 @@
 
 
 	<PropertyGroup>
-
-		<LibsDir>$(SlnRoot)\libs\dlls</LibsDir>
-
+		<LibsDir>$(SlnRoot)libs\dlls</LibsDir>
 	</PropertyGroup>
 
 	<PropertyGroup>
@@ -73,18 +72,21 @@
 		<BaseGamePath Condition="'$(BaseGamePath)' == '' and Exists('$(SlnRoot)CU_Demo\CasualtiesUnknown.exe')">$(SlnRoot)CU_Demo</BaseGamePath>
 		<BaseGamePath Condition="'$(BaseGamePath)' == '' and '$(SteamGameFolder)' != '' and Exists('C:\Program Files (x86)\Steam\steamapps\common\$(SteamGameFolder)\CasualtiesUnknown.exe')">C:\Program Files (x86)\Steam\steamapps\common\$(SteamGameFolder)</BaseGamePath>
 		<BaseGamePath Condition="'$(BaseGamePath)' == '' and Exists('C:\Program Files (x86)\Steam\steamapps\common\Casualties Unknown Demo\CasualtiesUnknown.exe')">C:\Program Files (x86)\Steam\steamapps\common\Casualties Unknown Demo</BaseGamePath>
-		<!-- Honestly, this one's probably not needed as it'll be decomissioned soon -->
 		<BaseGamePath Condition="'$(BaseGamePath)' == '' and Exists('C:\Program Files (x86)\Steam\steamapps\common\Casualties Unknown Playtest\CasualtiesUnknown.exe')">C:\Program Files (x86)\Steam\steamapps\common\Casualties Unknown Playtest</BaseGamePath>
 	</PropertyGroup>
 
 	<PropertyGroup>
-		<GameDir Condition="'$(GameDir)' == ''">$(BaseGamePath)</GameDir>
+		<!-- 仅当 BaseGamePath 含有效游戏程序集时才填充 GameDir 与本地插件目录，避免无游戏或模拟空路径时误创本地文件夹 -->
+		<GameDir Condition="'$(GameDir)' == '' and '$(BaseGamePath)' != '' and Exists('$(BaseGamePath)\CasualtiesUnknown_Data\Managed\Assembly-CSharp.dll')">$(BaseGamePath)</GameDir>
 		<GameManagedDir Condition="'$(GameManagedDir)' == '' and '$(GameDir)' != ''">$(GameDir)\CasualtiesUnknown_Data\Managed</GameManagedDir>
 		<BepInExDir Condition="'$(BepInExDir)' == '' and '$(GameDir)' != ''">$(GameDir)\BepInEx</BepInExDir>
 		<BepInExCoreDir Condition="'$(BepInExCoreDir)' == '' and '$(BepInExDir)' != ''">$(BepInExDir)\core</BepInExCoreDir>
 		<BepInExPluginsDir Condition="'$(BepInExPluginsDir)' == '' and '$(BepInExDir)' != ''">$(BepInExDir)\plugins</BepInExPluginsDir>
 		<BepInExPatchersDir Condition="'$(BepInExPatchersDir)' == '' and '$(BepInExDir)' != ''">$(BepInExDir)\patchers</BepInExPatchersDir>
 		<ModPluginOutputDir Condition="'$(ModPluginOutputDir)' == '' and '$(BepInExPluginsDir)' != ''">$(BepInExPluginsDir)\Together</ModPluginOutputDir>
+
+		<!-- 无有效本地游戏目录时自动回退至仓库内的脱壳元数据桩 references/，此时 BepInExPluginsDir 与 ModPluginOutputDir 保持为空 -->
+		<GameManagedDir Condition="'$(GameManagedDir)' == '' and Exists('$(SlnRoot)references\Assembly-CSharp.dll')">$(SlnRoot)references</GameManagedDir>
 	</PropertyGroup>
 
 	<PropertyGroup Condition="'$(BuildType)'!='Debug'">
@@ -98,9 +100,10 @@
 
 	<Target Name="EnsureGamePathsResolved" BeforeTargets="PrepareForBuild">
 		<PropertyGroup>
-			<ErrorText>This project requires a Casualties Unknown game installation to build. Set CASUALTIESTOGETHER_GAME_PATH environment variable, create a CU_Fullgame or CU_Demo folder next to the solution!</ErrorText>
+			<ErrorText>This project requires either reference stubs under 'references\' or a Casualties Unknown game installation (set CASUALTIESTOGETHER_GAME_PATH, pass -p:BaseGamePath=..., or create a CU_Fullgame or CU_Demo folder next to the solution).</ErrorText>
 		</PropertyGroup>
 		<Error Condition="'$(GameManagedDir)' == '' or !Exists('$(GameManagedDir)\Assembly-CSharp.dll')" Text="Assembly-CSharp.dll was not found at '$(GameManagedDir)'. $(ErrorText)" />
+		<Message Importance="High" Text="[CasualtiesTogether] Resolved GameManagedDir = '$(GameManagedDir)', ModPluginOutputDir = '$(ModPluginOutputDir)'" />
 	</Target>
 
 </Project>

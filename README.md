@@ -1,204 +1,161 @@
-
-
 <div align="center">
+
+English | [简体中文](README.zh-CN.md)
+
 <a href="https://www.nexusmods.com/scavprototype/mods/67">
 <img alt="Casualties: Together" src="https://github.com/creaturefeaturelarry/casualties-together/raw/refs/heads/main/.github/ct6.png">
 </a>
-</div>
 
-<div align="center">
-
-[![Stars](https://img.shields.io/github/stars/creaturefeaturelarry/casualties-together?style=flat-square&label=Stars&color=orange&logo=github)](https://github.com/creaturefeaturelarry/casualties-together/releases)
-[![Latest Release](https://img.shields.io/github/v/release/creaturefeaturelarry/casualties-together?style=flat-square&include_prereleases&logo=github&label=Version)](https://github.com/creaturefeaturelarry/casualties-together/releases/latest)
-[![Github Downloads](https://img.shields.io/github/downloads/creaturefeaturelarry/casualties-together/total?style=flat-square&color=blue&logo=github&label=Downloads)](https://github.com/creaturefeaturelarry/casualties-together/releases)
-[![Nexus Downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fjimmyking9999999%2FMetadata-generator%2Fmain%2Fbadges%2Fcasualties-together.json&style=flat-square)](https://www.nexusmods.com/scavprototype/mods/67?tab=files)
+[![Latest Release](https://img.shields.io/github/v/release/HuanXinPR/casualties-together?style=flat-square&include_prereleases&logo=github&label=Release)](https://github.com/HuanXinPR/casualties-together/releases)
+[![Build and Release](https://img.shields.io/github/actions/workflow/status/HuanXinPR/casualties-together/build-and-release.yml?branch=main&style=flat-square&logo=github&label=Build)](https://github.com/HuanXinPR/casualties-together/actions/workflows/build-and-release.yml)
+[![Upstream](https://img.shields.io/badge/Upstream-creaturefeaturelarry%2Fcasualties--together-blue?style=flat-square&logo=github)](https://github.com/creaturefeaturelarry/casualties-together)
 [![Game Version](https://img.shields.io/badge/Game_Version-v1.0.2-darkgreen?style=flat-square&logo=steam)](https://store.steampowered.com/app/4576510)
+
 </div>
 
+### Online Multiplayer Co-op Mod for ["Casualties: Unknown"](https://store.steampowered.com/app/4576510) (Patched Build)
 
+[![Casualties: Together](https://img.shields.io/badge/Casualties%3A%20Together%20Mod%20Discord-%235865F2.svg?logo=discord&logoColor=white)](https://discord.gg/SA6H7mA6De)
+[![Target Planet](https://img.shields.io/badge/Official%20Casualties%3A%20Unknown%20Discord-%235865F2.svg?logo=discord&logoColor=white)](https://discord.com/channels/955738554129063947/1470206122844618802)
 
+> **About This Repository**: This patched fork tracks upstream [Casualties: Together](https://github.com/creaturefeaturelarry/casualties-together) (`v5.5.4` wire protocol compatible), decouples hard dependencies on `CUCoreLib` / `Skins`, integrates stability, sync, Unicode nickname/font fallback, and localization fixes, and provides zero-secret GitHub Actions automated builds.
+>
+> Support the upstream developer: [Buy Me A Coffee](https://buymeacoffee.com/casualtiestogether)
 
-### Online Multiplayer Co-op mod for game ["Casualties: Unknown"](https://store.steampowered.com/app/4576510)<br/>
+---
 
+## Install Guide
 
-[![Casualties: Together](https://img.shields.io/badge/Casualties%3A%20Together%20Mod%20Discord-%235865F2.svg?logo=discord&logoColor=white)](https://discord.gg/SA6H7mA6De)   [![Target Planet](https://img.shields.io/badge/Official%20Casualties%3A%20Unknown%20Discord-%235865F2.svg?logo=discord&logoColor=white)](https://discord.com/channels/955738554129063947/1470206122844618802)
+### Requirements
 
+- Game: [Casualties: Unknown](https://store.steampowered.com/app/4576510) (`v1.0.2`)
+- Mod Loader: [BepInEx 5.4.23.5 (win_x64)](https://github.com/BepInEx/BepInEx/releases/download/v5.4.23.5/BepInEx_win_x64_5.4.23.5.zip)
+- Mod Package: Download `CasualtiesTogether-v*.zip` from [GitHub Releases](https://github.com/HuanXinPR/casualties-together/releases)
 
-## Support developer:
+### Steps
 
-[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/casualtiestogether)
+1. Open the game root directory in Steam (`Right-click Casualties: Unknown > Manage > Browse local files`).
+2. Extract `BepInEx_win_x64_5.4.23.5.zip` directly into the game root directory.
+3. Extract `CasualtiesTogether-v*.zip` directly into the game root directory (the archive top-level path is already `BepInEx/plugins/Together/`, so it merges straight into `BepInEx`).
+4. Verify your directory layout looks like this:
 
+```text
+Casualties Unknown/
+├── CasualtiesUnknown.exe
+├── CasualtiesUnknown_Data/
+├── winhttp.dll                       <- from BepInEx zip
+├── doorstop_config.ini               <- from BepInEx zip
+└── BepInEx/
+    ├── core/                         <- from BepInEx zip
+    └── plugins/
+        └── Together/                 <- from CasualtiesTogether-v*.zip
+            ├── CasualtiesMP.dll
+            ├── K4os.Compression.LZ4.dll
+            ├── LiteEntitySystem.dll
+            ├── LiteNetLib.dll
+            ├── OpusSharp.Core.dll
+            ├── opus.dll
+            ├── RefMagic.dll
+            └── System.Runtime.CompilerServices.Unsafe.dll
+```
 
+5. Launch the game **through Steam**. Multiplayer buttons will appear on the main menu.
+   - To play singleplayer temporarily without uninstalling files, click `Deactivate MP Mod` under `Settings > General` (or launch with `--mp-disable`).
+   - **Linux / Proton**: Add `WINEDLLOVERRIDES="winhttp=n,b" %command%` to Steam Launch Options so Proton loads BepInEx.
 
-# Install Guide:
+---
 
-### Requirements:
-Download Game: https://store.steampowered.com/app/4576510<br/>
-Download BepInEx: https://github.com/BepInEx/BepInEx/releases/download/v5.4.23.5/BepInEx_win_x64_5.4.23.5.zip<br/>
-Download Co-op Mod: [https://www.nexusmods.com/scavprototype/mods/67](https://www.nexusmods.com/scavprototype/mods/67?tab=files)<br/>
+## Release Assets & Nightly Builds
 
-<details><summary>
+Each release on [GitHub Releases](https://github.com/HuanXinPR/casualties-together/releases) provides four build artifacts plus a `SHA256SUMS.txt` checksum manifest:
 
-### Click to show full install guide.
-</summary>
+| Asset | Purpose |
+| --- | --- |
+| `CasualtiesTogether-v<Version>.zip` | **Standard Full Package** (`BepInEx/plugins/Together/` with Release `CasualtiesMP.dll` + 7 runtime dependency DLLs). Extract directly into the game root for fresh installs or full updates. |
+| `CasualtiesMP.dll` | **Standalone Release DLL**. If you already installed the full package and runtime libraries, replace `BepInEx/plugins/Together/CasualtiesMP.dll` for quick updates. |
+| `CasualtiesTogether-v<Version>+debug.zip` | **Debug Full Package**. Includes `DEBUG`/`TESTING` diagnostics and portable `CasualtiesMP.pdb` symbols (9 files total) for crash stack traces and sync troubleshooting. |
+| `CasualtiesMP+debug.dll` | **Standalone Debug DLL**. Rename to `CasualtiesMP.dll` inside `BepInEx/plugins/Together/` when switching an existing install to a debug build. |
+| `v<Version>-nightly.<YYYYMMDD>` *(Pre-release)* | **Daily Nightly Build**. Automatically published once per day when `main` receives new commits since the last release or nightly tag. |
 
-1. Download all the prerequisistes ^^^^^^ 
+---
 
-2. Go to the game root directory.
-    - In Steam, Right click on the game.
-    - Click `Manage > Browse local files`
+## Lobby File Hash Check (`Verify Game Hash`)
 
+During connection handshake, the host checks `Verify Game Hash` (enabled by default in server settings), which compares a combined binary hash of `Assembly-CSharp.dll` and `CasualtiesMP.dll`:
 
-3. Unzip `BepInEx*.zip` into the game root directory.
+- Builds from this repository stay wire-compatible with upstream `v5.5.4` (`1.0.2_MPv5.5.4`), so packet formats and game rules match.
+- Because `CasualtiesMP.dll` binaries differ between upstream releases, this patched fork, `+debug` builds, and `nightly` builds, their file hashes will not match.
+- **When all players install the exact same release package**, you can leave `Verify Game Hash` enabled.
+- **When playing across different builds of the same protocol version** (for example mixing this patched build with upstream `v5.5.4`, or mixing Release with `+debug`), the host should uncheck **`Verify Game Hash`** in the server configuration panel so clients are not rejected with `Game file hashes do not match`.
 
-4. Unzip `MPMod*.zip`, open `mod` folder and move the contents into the game root directory.
+---
 
-5. Now it should look like this 
-   
-![alt text](https://github.com/creaturefeaturelarry/casualties-together/raw/refs/heads/main/.github/tut_1.png)
+## Warnings
 
-7. Go back to steam and click **Play**.
+- Launch the game from your Steam Library if Steam Lobbies fail to initialize.
+- A stable network connection is recommended; the mod has no client-side prediction, network ownership, deterministic RNG, or anti-cheat.
+- If you encounter glitches or crashes while modded, report them to the mod repository/Discord rather than the base game developer.
 
-8. In main menu, multiplayer related buttons should appear.
-    - (To go back to singleplayer you need to press the `Deactivate MP Mod` button in `Settings > General`!)
+---
 
-9. (optional) Upvote/Share/Support the mod.
+## Features
 
-<details>
-<summary>FOR LINUX USERS</summary>
+- Steam Lobbies and direct IPv4/IPv6 hosting, plus Lobby Host Transfer
+- Proximity and radio voice chat / text chat with in-game speech & hearing distortions
+- Middle mouse button location ping (double-click for alert)
+- Right-click player interaction menu: inspect wounds/health, perform medical actions & CPR, trade/take inventory items, feed/use items, push, carry, and piggyback
+- Shared body warmth and mood buffs near teammates
+- Spectator mode on death, trader revival, and layer-transition respawn (unless `Permadeath` is enabled)
+- Individual `Unchipped` setting, MP3 player boombox streaming, and dedicated server mode (`FOR-NERDS.txt`)
 
-1. Add this to launch options `WINEDLLOVERRIDES="winhttp=n,b" %command%`
-    - It tells proton to load BepInEx.
+### Console Commands
 
-</details>
-</details>
-<br>
+Host can unlock cheat/rule commands in the console:
 
+```text
+rule sv_cheats 1
+```
 
+Host modifies rules with `rule <rule_name> <value>`. Clients can be granted remote server console access via `adminpriv <player>` or `adminpriv-password`.
 
-    
-# Warning:
-If installation doesn't work, Try again.
- - Or cry at people in "Casualties: Together" discord server: [https://discord.gg/FrBX3srzzG](https://discord.gg/FrBX3srzzG)
+---
 
-Make sure to launch the game through Steam Library if Steam Lobbies don't work.
+## Building from Source
 
-It's recommended to have good internet connection for optimal experience.
+### Zero-Secret Cloud / Stub Build (No Local Game Required)
 
+The repository tracks stripped metadata reference stubs under `references/*.dll` (all method body IL implementations and embedded resources removed via `BepInEx.AssemblyPublicizer`, keeping type/member signatures intact) alongside the 7 runtime libraries under `libs/dlls/`. No Steam installation or CI secret is needed to compile or package:
 
-!!!<br>
-IF YOU ENCOUNTER ANY GLITCHES, CRASHES, OTHER ISSUES - BLAME THE MOD, NOT THE ORIGINAL DEVELOPER OF THE GAME<br>
-!!!
+```powershell
+# Compile Fullgame Release configuration
+dotnet build CasualtiesTogether.sln -c ReleaseFullgame
 
-To go back to singleplayer you need to press the `Deactivate MP Mod` button in `Settings > General`!
+# Compile and package all 5 release assets into build/release-assets
+pwsh -NoProfile -File ./scripts/package-release.ps1
+```
 
+### Local Game Development & Refreshing Reference Stubs
 
-# Features:
-Steam Lobbies<br>
-Real voice chat with in-game effects.<br/>
-Middle Mouse Button to point at a location.<br>
-Right click to interact and heal other players.<br> 
-Stay close to others to share body temperature.<br>
-Spectator mode when dead.<br>
-Sleeping is disabled.<br>
-Hunger and thirst is slowed down.<br>
-Carrying incapacitated players.<br>
-Any dead players respawns at next layer.<br>
-Unchipped option is individual.<br>
-Most of these features can be tweaked in the in-game console.<br>
-Also this mod can run as a dedicated server. (its not real headless)<br>
+- If a local game installation exists (configured via `CASUALTIESTOGETHER_GAME_PATH`, `CasualtiesTogether.Local.props`, `-p:BaseGamePath=...`, or a sibling `CU_Fullgame` folder), `Directory.Build.props` resolves the real `CasualtiesUnknown_Data/Managed` directory and automatically copies build outputs into `<GameDir>/BepInEx/plugins/Together/` on post-build.
+- You can also run `python scripts/prepare_workspace.py` to set up a local test copy with BepInEx.
+- After a base game update, regenerate the stripped metadata stubs from your local Steam installation using PowerShell 7:
 
-There's no client prediction.<br>
-There's no network ownership.<br>
-There's no deterministic RNG.<br>
-There's no anticheat. <br>
-This mod only adds a simple co-op experience to the game.<br>
+```powershell
+pwsh -NoProfile -File ./scripts/generate-ref-stubs.ps1 -GamePath "C:\Path\To\Casualties Unknown"
+```
 
+---
 
+## Credits
 
+Credits are listed in the "About" menu inside the mod.
 
+- [Creature](https://github.com/creaturefeaturelarry) — Upstream maintainer
+- [Krokosha666](https://github.com/Krokosha666) — Original developer (retired)
+- [Dune](https://github.com/Jyan-sei) — Sync, optimizations
+- [VtLoader](https://github.com/vtloader) — Bug fixes, locale
+- [Gary the Cat](https://github.com/Garythecat89), [Dannad](https://github.com/danxnader), [Meow](https://github.com/SprightlyHawk8), [Jimmyking](https://github.com/jimmyking9999999), [Kidihh](https://github.com/Kidihh), [Dawn](https://github.com/hehdawn), [mayzmae](https://github.com/mayzmae), ItsVoidSK, and all playtesters & supporters
 
-# Full feaure list:
+## License
 
-Disabled sleeping. (tied to the rule "EnableSleep" )<br>
-Disabled time scale buttons. (don't try re-enable this actually)<br>
-Player friendly fire can be enabled with the "PVP" rule.<br>
-Middle mouse click to highlight a location at your cursor, for the other players to see.<br>
-Stand close to other players to share body temperature.<br>
-
-Text chat and Voice chat are dependent on your characters ability to speak, same distortions apply to your messages.<br>
-MP3 Player now is a boombox instead of replacing background music.<br>
-
-Right click on a player to open a player interaction context menu.
- - Inspect health panel and perform any actions.
- - Inspect their inventory and take their items. 
- - Use any usable item on them (Feeding).
-
-When a player dies, they are put into spectator mode.
- - All dead players respawn after living players reach the next level.
- - (if rule "Permadeath" is true, respawns are disabled)
- - Player can be revived from traders.
-   
-To continue to the next layer, half of all players must reach the end. 
- - Straggles will get killed if they take too long.
- - Only the Host gets prompted to continue the run.
- - DrillPod works the same, all players must be in the pod to continue.
- - (tweaked by the rule "LayerFinishConditionPlayerPercent")
-
-Player health regen and decay is tweaked.
- - Death is much faster if there are no comrades nearby. ( tweaked by the "AdditionalHealthDecay" rule )
- - Health regeneration is boosted. ( tweaked by the "AdditionalHealthRegen" rule)
-
-All these rules can be changed only by the Host by running the command "rule [rule name] [new value]"<br>
-
-You can eat your friends after they died. 
- - The rule "CanAmputateHealthyPlayers" allows you to steal limbs of living players.
-
-Traders first impression reputation is calculated from the prettiest of the bunch.<br>
-
-
-
-# How to enable all console commands:
-
-The Host must enter this console command:<br>
-```rule sv_cheats 1```<br>
-**To let Client into server console mode they need "admin" privilege.**<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**(Given by "adminpriv [player]" or "adminpriv-password")**
-
-
-
-# Building:
-
-Run script `scripts/prepare_workspace.py`
-
-It copies the game and installs bepinex.
-
-**Visual Studio 2022** is recommended.
-
-Open the project and compile it.
-
-Hit F5
-
-You have to launch multiple instances of the game manually or using scripts.
-
-Uuhh <img src="https://media1.tenor.com/m/qPyvaruhJsYAAAAd/drooling-cat-lord-im-one.gif" width="32" height="32">   
-
-
-# Credits:
-
-Credits are listed in "About" menu inside the mod.<br>
-[Creature](https://github.com/creaturefeaturelarry) Current owner.<br>
-[Krokosha666](https://github.com/Krokosha666) Original developer. (Retired)
-
-### Contributors:
-[Dune](https://github.com/Jyan-sei) - Sync, Optimizations<br>
-[VtLoader](https://github.com/vtloader) - Bug fixes, Locale<br>
-[Gary the Cat](https://github.com/Garythecat89), [Dannad](https://github.com/danxnader), [Meow](https://github.com/SprightlyHawk8), [Jimmyking](https://github.com/jimmyking9999999), [Kidihh](https://github.com/Kidihh), [Dawn](https://github.com/hehdawn), [mayzmae](https://github.com/mayzmae), ItsVoidSK<br>
-...And a bunch of playtesters
-
-### Supporters:
- 
-```Bleh :P, EthanTheProtogen, RoyMartini, Jazun, Alexx__, vega, Zmechol1337, plasterjello, Doctor Callico, vivikat, Ariyah, killthebudget, _stuck_, ShaoAZ, JameisonAus, Kidi, BluBerryToaster, Katomou, Nemean_Lion732, Locko2265, Trenchburner, TheBoathead, Diesel, Malbyte, KaliVasquez, Mitirich, Shiro, ChrisTheDragon```
-
-
-
+LGPL-2.1, see [LICENSE](LICENSE).

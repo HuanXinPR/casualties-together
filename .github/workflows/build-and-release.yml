@@ -1,0 +1,275 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - 'main'
+  pull_request:
+    branches:
+      - 'main'
+  schedule:
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+    inputs:
+      release_mode:
+        description: 'Release mode (auto: release when version tag is new; nightly: publish nightly pre-release; build_only: build and upload Actions artifact only)'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - nightly
+          - build_only
+
+permissions:
+  contents: read
+
+concurrency:
+  # PR 新推送自动取消在途旧构建；main 分支严禁中断正在执行的打标签与发版流程
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build & Package (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore NuGet packages
+        shell: pwsh
+        run: |
+          dotnet restore CasualtiesTogether.sln
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check Demo configurations (Release & Debug)
+        shell: pwsh
+        run: |
+          $stubMarker = Join-Path $PWD "__ci_reference_stubs_only__"
+          dotnet build CasualtiesTogether.sln -c Release --no-restore --no-incremental -p:BaseGamePath="$stubMarker"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build CasualtiesTogether.sln -c Debug --no-restore --no-incremental -p:BaseGamePath="$stubMarker"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Package Fullgame Release & Debug assets
+        shell: pwsh
+        run: |
+          & ./scripts/package-release.ps1 -OutputDir "build/release-assets"
+
+      - name: Upload release assets artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: casualties-together-release-assets
+          path: build/release-assets/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Tag & Publish GitHub Release
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download release assets artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: casualties-together-release-assets
+          path: release-assets
+
+      - name: Determine release target, prepare assets, and push tag
+        id: prepare
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_MODE: ${{ inputs.release_mode }}
+        run: |
+          set -euo pipefail
+
+          MOD_VERSION="$(sed -n 's/.*<ModVersion>\([^<]*\)<\/ModVersion>.*/\1/p' Directory.Build.props | tr -d '\r[:space:]' | head -n 1)"
+          if [[ -z "${MOD_VERSION}" ]]; then
+            echo "::error::Failed to read <ModVersion> from Directory.Build.props"
+            exit 1
+          fi
+          VERSION_TAG="v${MOD_VERSION}"
+          echo "Detected ModVersion=${MOD_VERSION} (${VERSION_TAG}) at commit ${GITHUB_SHA}"
+
+          git fetch origin --tags --force
+
+          MODE="skip"
+          if [[ "${EVENT_NAME}" == "push" ]]; then
+            MODE="auto"
+          elif [[ "${EVENT_NAME}" == "schedule" ]]; then
+            MODE="nightly_schedule"
+          elif [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            case "${DISPATCH_MODE:-auto}" in
+              auto)
+                MODE="auto"
+                ;;
+              nightly)
+                MODE="nightly_manual"
+                ;;
+              build_only)
+                MODE="build_only"
+                ;;
+              *)
+                echo "::error::Unsupported release_mode '${DISPATCH_MODE}'"
+                exit 1
+                ;;
+            esac
+          fi
+
+          SHOULD_RELEASE="false"
+          TARGET_TAG=""
+          PRERELEASE="false"
+          MAKE_LATEST="false"
+
+          # 区分 ls-remote 退出码 0（存在）与 2（不存在），防止将网络故障 128 误判为未创建 tag
+          remote_tag_exists() {
+            local tag_name="$1"
+            local rc=0
+            git ls-remote --exit-code --tags origin "refs/tags/${tag_name}" >/dev/null 2>&1 || rc=$?
+            if [[ ${rc} -eq 0 ]]; then
+              return 0
+            elif [[ ${rc} -eq 2 ]]; then
+              return 1
+            else
+              echo "::error::git ls-remote failed for tag '${tag_name}' with exit code ${rc}"
+              exit "${rc}"
+            fi
+          }
+
+          if [[ "${MODE}" == "build_only" ]]; then
+            echo "Manual build_only mode selected; skipping GitHub Release creation."
+            echo "### Release Skipped (\`build_only\`)" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- Commit \`${GITHUB_SHA}\` built successfully without publishing a release." >> "${GITHUB_STEP_SUMMARY}"
+
+          elif [[ "${MODE}" == "auto" ]]; then
+            if remote_tag_exists "${VERSION_TAG}"; then
+              echo "Remote tag '${VERSION_TAG}' already exists on origin; skipping formal release."
+              echo "### Formal Release Skipped" >> "${GITHUB_STEP_SUMMARY}"
+              echo "- Remote tag \`${VERSION_TAG}\` already exists on \`origin\`. Bump \`<ModVersion>\` in \`Directory.Build.props\` to publish a new formal release." >> "${GITHUB_STEP_SUMMARY}"
+            else
+              TARGET_TAG="${VERSION_TAG}"
+              PRERELEASE="false"
+              MAKE_LATEST="true"
+              SHOULD_RELEASE="true"
+            fi
+
+          elif [[ "${MODE}" == "nightly_schedule" || "${MODE}" == "nightly_manual" ]]; then
+            # 检查远端已有 v* 正式版与 v*-nightly.* 标签解析后的源码 commit 是否已覆盖当前 GITHUB_SHA
+            MATCHING_TAGS=()
+            while IFS= read -r remote_ref; do
+              [[ -z "${remote_ref}" ]] && continue
+              tag_short="${remote_ref#refs/tags/}"
+              tag_commit="$(git rev-parse -q --verify "refs/tags/${tag_short}^{commit}" 2>/dev/null || true)"
+              if [[ "${tag_commit}" == "${GITHUB_SHA}" ]]; then
+                MATCHING_TAGS+=("${tag_short}")
+              fi
+            done < <(git ls-remote --refs --tags origin "refs/tags/v*" | awk '{print $2}')
+
+            LATEST_REACHABLE_TAG="$(git describe --tags --abbrev=0 --match 'v*' "${GITHUB_SHA}" 2>/dev/null || true)"
+            if [[ -n "${LATEST_REACHABLE_TAG}" ]]; then
+              LATEST_TAG_SHA="$(git rev-parse "${LATEST_REACHABLE_TAG}^{commit}")"
+              echo "Latest reachable version/nightly tag: ${LATEST_REACHABLE_TAG} (${LATEST_TAG_SHA})"
+            else
+              echo "No prior reachable v* tag found in history."
+            fi
+
+            if [[ ${#MATCHING_TAGS[@]} -gt 0 && "${MODE}" == "nightly_schedule" ]]; then
+              EXISTING_LIST="${MATCHING_TAGS[*]}"
+              echo "Scheduled nightly skipped: commit ${GITHUB_SHA} is already tagged on origin (${EXISTING_LIST})."
+              echo "### Scheduled Nightly Skipped" >> "${GITHUB_STEP_SUMMARY}"
+              echo "- No new commits since existing release/nightly tag(s) pointing at \`${GITHUB_SHA}\`: \`${EXISTING_LIST}\`." >> "${GITHUB_STEP_SUMMARY}"
+            else
+              UTC_DATE="$(date -u +%Y%m%d)"
+              BASE_NIGHTLY_TAG="v${MOD_VERSION}-nightly.${UTC_DATE}"
+              if remote_tag_exists "${BASE_NIGHTLY_TAG}"; then
+                CANDIDATE_TAG="${BASE_NIGHTLY_TAG}.${GITHUB_RUN_NUMBER}"
+                if remote_tag_exists "${CANDIDATE_TAG}"; then
+                  TARGET_TAG="${CANDIDATE_TAG}.${GITHUB_RUN_ATTEMPT}"
+                else
+                  TARGET_TAG="${CANDIDATE_TAG}"
+                fi
+              else
+                TARGET_TAG="${BASE_NIGHTLY_TAG}"
+              fi
+              PRERELEASE="true"
+              MAKE_LATEST="false"
+              SHOULD_RELEASE="true"
+            fi
+          fi
+
+          if [[ "${SHOULD_RELEASE}" == "true" ]]; then
+            pushd release-assets >/dev/null
+
+            if [[ "${TARGET_TAG}" != "${VERSION_TAG}" ]]; then
+              mv -f "CasualtiesTogether-${VERSION_TAG}.zip" "CasualtiesTogether-${TARGET_TAG}.zip"
+              mv -f "CasualtiesTogether-${VERSION_TAG}+debug.zip" "CasualtiesTogether-${TARGET_TAG}+debug.zip"
+            fi
+
+            EXPECTED_FILES=(
+              "CasualtiesTogether-${TARGET_TAG}.zip"
+              "CasualtiesTogether-${TARGET_TAG}+debug.zip"
+              "CasualtiesMP.dll"
+              "CasualtiesMP+debug.dll"
+            )
+            for f in "${EXPECTED_FILES[@]}"; do
+              if [[ ! -s "${f}" ]]; then
+                echo "::error::Missing or empty release asset: ${f}"
+                exit 1
+              fi
+            done
+
+            sha256sum "${EXPECTED_FILES[@]}" > SHA256SUMS.txt
+            sha256sum -c SHA256SUMS.txt
+            popd >/dev/null
+
+            # 资产重命名与哈希自检全部通过后再推送远端 tag，防止半途失败留下无产物的孤立 tag
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag "${TARGET_TAG}" "${GITHUB_SHA}"
+            git push origin "refs/tags/${TARGET_TAG}"
+
+            echo "### Release Prepared: \`${TARGET_TAG}\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- Commit: \`${GITHUB_SHA}\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- Prerelease: \`${PRERELEASE}\`, Make Latest: \`${MAKE_LATEST}\`" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+          {
+            echo "should_release=${SHOULD_RELEASE}"
+            echo "target_tag=${TARGET_TAG}"
+            echo "prerelease=${PRERELEASE}"
+            echo "make_latest=${MAKE_LATEST}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Publish GitHub Release
+        if: steps.prepare.outputs.should_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.prepare.outputs.target_tag }}
+          name: "Casualties: Together ${{ steps.prepare.outputs.target_tag }}"
+          prerelease: ${{ steps.prepare.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.prepare.outputs.make_latest }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/CasualtiesTogether-${{ steps.prepare.outputs.target_tag }}.zip
+            release-assets/CasualtiesTogether-${{ steps.prepare.outputs.target_tag }}+debug.zip
+            release-assets/CasualtiesMP.dll
+            release-assets/CasualtiesMP+debug.dll
+            release-assets/SHA256SUMS.txt
