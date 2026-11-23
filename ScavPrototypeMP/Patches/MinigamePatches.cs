@@ -2644,7 +2644,7 @@ namespace Together {
 
 #if FULLGAME
     /// <summary>
-    /// 记录每种义肢修补耗材对应的最大破洞修补次数，并提供原版耗材服务端权威常量解析与过期缓存清理（对应 PR #60/#58）。
+    /// 记录每种义肢修补耗材对应的最大破洞修补次数，并提供原版耗材服务端权威常量解析、实例 ID 防复用串台校验与过期缓存清理（对应 PR #70/#60/#58）。
     /// </summary>
     [HarmonyPatch(typeof(Item), nameof(Item.TryProsthesisRepair))]
     public static class ProsthesisRepair_RememberPatchCount {
@@ -2652,10 +2652,12 @@ namespace Together {
         private const int MaxModdedHoleCountClamp = 64;
 
         public static readonly Dictionary<ushort, int> PatchCount = new Dictionary<ushort, int>();
+        // syncId 在旧物品销毁后会被复用，必须同时校对 GameObject 实例 ID，防止已销毁物品的缓存次数串台到新物品
+        private static readonly Dictionary<ushort, int> PatchInstance = new Dictionary<ushort, int>();
         private static readonly List<ushort> StaleKeys = new List<ushort>();
 
         static void Prefix(Item item, int holeCount) {
-            if (item == null || holeCount < 1) {
+            if (item == null || item.gameObject == null || holeCount < 1) {
                 return;
             }
             PruneStaleEntriesIfNeeded();
@@ -2663,6 +2665,29 @@ namespace Together {
                 return;
             }
             PatchCount[si.syncId.id] = holeCount;
+            PatchInstance[si.syncId.id] = item.gameObject.GetInstanceID();
+        }
+
+        public static bool TryGetRemembered(ushort syncId, Item item, out int holeCount) {
+            holeCount = 0;
+            if (item == null || item.gameObject == null || !PatchCount.TryGetValue(syncId, out holeCount) || holeCount < 1) {
+                return false;
+            }
+            if (!PatchInstance.TryGetValue(syncId, out int instanceId) || item.gameObject.GetInstanceID() != instanceId) {
+                PatchCount.Remove(syncId);
+                PatchInstance.Remove(syncId);
+                holeCount = 0;
+                return false;
+            }
+            return true;
+        }
+
+        [CTPostInit]
+        static void Init() {
+            WorldMP.OnWorldgenFinish += () => {
+                PatchCount.Clear();
+                PatchInstance.Clear();
+            };
         }
 
         /// <summary>
@@ -2685,7 +2710,7 @@ namespace Together {
         }
 
         public static int ResolveClientHoleCountHint(Item item, ushort syncId) {
-            if (PatchCount.TryGetValue(syncId, out int cached) && cached >= 1) {
+            if (TryGetRemembered(syncId, item, out int cached)) {
                 return cached;
             }
             if (item != null && TryGetVanillaHoleCount(item.id, out int vanillaCount)) {
@@ -2697,7 +2722,7 @@ namespace Together {
         /// <summary>
         /// 服务端权威解析义肢修补耗材的 <c>holeCount</c>：
         /// 1. 已知原版耗材强制返回服务端权威常量（忽略客机提示）；
-        /// 2. 服务端已记录 <see cref="PatchCount"/> 的物品优先取缓存值；
+        /// 2. 服务端已记录 <see cref="PatchCount"/> 且实例 ID 匹配的物品优先取缓存值；
         /// 3. 仅未知第三方模组耗材因 <c>ReliableUnordered</c> 乱序或读档恢复未命中缓存时，回退采用 <c>[1, 64]</c> 截断后的客机提示（上限 64 确保 <c>1/holeCount &gt; 0.0015f</c> 严格正向扣减耐久）。
         /// </summary>
         public static int ResolveAuthoritativeHoleCount(Item item, int clientHint) {
@@ -2710,14 +2735,18 @@ namespace Together {
             }
             if (NetObjectRegistry.TryGetSyncInfo(item.gameObject, out SyncInfo si)
                 && si != null
-                && PatchCount.TryGetValue(si.syncId.id, out int cachedCount)
-                && cachedCount >= 1) {
+                && TryGetRemembered(si.syncId.id, item, out int cachedCount)) {
                 return cachedCount;
             }
             if (clientHint >= 1) {
                 return Mathf.Clamp(clientHint, 1, MaxModdedHoleCountClamp);
             }
             return 0;
+        }
+
+        public static void Forget(ushort syncId) {
+            PatchCount.Remove(syncId);
+            PatchInstance.Remove(syncId);
         }
 
         public static void PruneStaleEntriesIfNeeded() {
@@ -2731,7 +2760,7 @@ namespace Together {
                 }
             }
             for (int i = 0; i < StaleKeys.Count; i++) {
-                PatchCount.Remove(StaleKeys[i]);
+                Forget(StaleKeys[i]);
             }
             StaleKeys.Clear();
         }
@@ -2795,6 +2824,9 @@ namespace Together {
             }
             si.SetIgnoreTimeForRoundTrip();
             int holeHint = ProsthesisRepair_RememberPatchCount.ResolveClientHoleCountHint(Minigame.game.currentItem, si.syncId.id);
+            if (holeHint < 1) {
+                holeHint = Traverse.Create(repair).Field("maxPatches").GetValue<int>();
+            }
             string msg = holeHint > 0
                 ? string.Format(CultureInfo.InvariantCulture, "prosthesis_patch {0} {1} {2} {3} {4}", si.syncId.id, nb.netId.id, Util.GetLimbIndex(limb), flags, holeHint)
                 : string.Format(CultureInfo.InvariantCulture, "prosthesis_patch {0} {1} {2} {3}", si.syncId.id, nb.netId.id, Util.GetLimbIndex(limb), flags);
@@ -2866,7 +2898,7 @@ namespace Together {
                     return;
                 }
                 if (itemSi.item.condition <= 0f) {
-                    ProsthesisRepair_RememberPatchCount.PatchCount.Remove(itemId);
+                    ProsthesisRepair_RememberPatchCount.Forget(itemId);
                 }
                 itemSi.WriteObjectIntoPacket();
                 MedicalSync.Server_QueueSendCharacterHealth(target, true);

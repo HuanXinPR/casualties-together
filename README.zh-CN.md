@@ -18,7 +18,7 @@
 [![Casualties: Together](https://img.shields.io/badge/Casualties%3A%20Together%20Mod%20Discord-%235865F2.svg?logo=discord&logoColor=white)](https://discord.gg/SA6H7mA6De)
 [![Target Planet](https://img.shields.io/badge/Official%20Casualties%3A%20Unknown%20Discord-%235865F2.svg?logo=discord&logoColor=white)](https://discord.com/channels/955738554129063947/1470206122844618802)
 
-> **仓库说明**：本仓库跟进上游 [Casualties: Together](https://github.com/creaturefeaturelarry/casualties-together)（兼容 `v5.5.4` 线上通信协议），移除了对 `CUCoreLib` 与 `Skins` 模块的耦合依赖，集成物品/医疗/武器同步、单机直通保护、Unicode 昵称与动态字体回退、简繁俄本地化补全等多项修复，并提供零 Secret 云端自动构建与发布。
+> **仓库说明**：本仓库跟进上游 [Casualties: Together](https://github.com/creaturefeaturelarry/casualties-together)（兼容 `v5.5.5` 线上通信协议），移除了对 `CUCoreLib` 与 `Skins` 模块的耦合依赖，集成物品/医疗/武器同步、单机直通保护、Unicode 昵称与动态字体回退、简繁俄本地化补全等多项修复，并提供零 Secret 云端自动构建与发布。
 >
 > 支持上游原作者：[Buy Me A Coffee](https://buymeacoffee.com/casualtiestogether)
 
@@ -30,7 +30,7 @@
 
 - 游戏本体：[Casualties: Unknown](https://store.steampowered.com/app/4576510)（`v1.0.2`）
 - 模组加载器：[BepInEx 5.4.23.5 (win_x64)](https://github.com/BepInEx/BepInEx/releases/download/v5.4.23.5/BepInEx_win_x64_5.4.23.5.zip)
-- 联机模组包：前往本仓库 [GitHub Releases](https://github.com/HuanXinPR/casualties-together/releases) 下载 `CasualtiesTogether-v*.zip`
+- 联机模组包：前往本仓库 [GitHub Releases](https://github.com/HuanXinPR/casualties-together/releases) 下载 `CasualtiesTogether-v*.zip`（例如 `CasualtiesTogether-v5.5.5.zip`）
 
 ### 安装步骤
 
@@ -83,10 +83,10 @@ Casualties Unknown/
 
 客机进房握手时，房主端默认开启 **`验证游戏哈希`（`Verify Game Hash`）** 开关，它会校验双方本地 `Assembly-CSharp.dll` 与 `CasualtiesMP.dll` 的二进制文件哈希是否完全相同：
 
-- 本仓库构建产物与上游原版 `v5.5.4` 保持相同的联机协议版本号（`1.0.2_MPv5.5.4`），网络数据包与规则布局完全兼容。
+- 本仓库构建产物与上游原版 `v5.5.5` 保持相同的联机协议版本号（`1.0.2_MPv5.5.5`），网络数据包与规则布局完全兼容。
 - 但由于本仓库补丁版、上游原版、`+debug` 调试版及各期 `nightly` 构建编译出的 `CasualtiesMP.dll` 二进制内容不同，文件哈希并不相同。
 - **同包联机**：若所有玩家安装的都是同一份发布包，保持默认的「验证游戏哈希」开启即可。
-- **跨构建互通联机**：若房间内混用了上游原版 `v5.5.4`、本仓库补丁版或 `+debug` 版，请房主在建房配置界面取消勾选 **`验证游戏哈希`（`Verify Game Hash`）**，即可避免出现「游戏文件哈希不匹配（Game file hashes do not match）」拒连提示。
+- **跨构建互通联机**：若房间内混用了上游原版 `v5.5.5`、本仓库补丁版或 `+debug` 版，请房主在建房配置界面取消勾选 **`验证游戏哈希`（`Verify Game Hash`）**，即可避免出现「游戏文件哈希不匹配（Game file hashes do not match）」拒连提示。
 
 ---
 

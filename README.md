@@ -18,7 +18,7 @@ English | [简体中文](README.zh-CN.md)
 [![Casualties: Together](https://img.shields.io/badge/Casualties%3A%20Together%20Mod%20Discord-%235865F2.svg?logo=discord&logoColor=white)](https://discord.gg/SA6H7mA6De)
 [![Target Planet](https://img.shields.io/badge/Official%20Casualties%3A%20Unknown%20Discord-%235865F2.svg?logo=discord&logoColor=white)](https://discord.com/channels/955738554129063947/1470206122844618802)
 
-> **About This Repository**: This patched fork tracks upstream [Casualties: Together](https://github.com/creaturefeaturelarry/casualties-together) (`v5.5.4` wire protocol compatible), decouples hard dependencies on `CUCoreLib` / `Skins`, integrates stability, sync, Unicode nickname/font fallback, and localization fixes, and provides zero-secret GitHub Actions automated builds.
+> **About This Repository**: This patched fork tracks upstream [Casualties: Together](https://github.com/creaturefeaturelarry/casualties-together) (`v5.5.5` wire protocol compatible), decouples hard dependencies on `CUCoreLib` / `Skins`, integrates stability, sync, Unicode nickname/font fallback, and localization fixes, and provides zero-secret GitHub Actions automated builds.
 >
 > Support the upstream developer: [Buy Me A Coffee](https://buymeacoffee.com/casualtiestogether)
 
@@ -30,7 +30,7 @@ English | [简体中文](README.zh-CN.md)
 
 - Game: [Casualties: Unknown](https://store.steampowered.com/app/4576510) (`v1.0.2`)
 - Mod Loader: [BepInEx 5.4.23.5 (win_x64)](https://github.com/BepInEx/BepInEx/releases/download/v5.4.23.5/BepInEx_win_x64_5.4.23.5.zip)
-- Mod Package: Download `CasualtiesTogether-v*.zip` from [GitHub Releases](https://github.com/HuanXinPR/casualties-together/releases)
+- Mod Package: Download `CasualtiesTogether-v*.zip` (e.g. `CasualtiesTogether-v5.5.5.zip`) from [GitHub Releases](https://github.com/HuanXinPR/casualties-together/releases)
 
 ### Steps
 
@@ -83,10 +83,10 @@ Each release on [GitHub Releases](https://github.com/HuanXinPR/casualties-togeth
 
 During connection handshake, the host checks `Verify Game Hash` (enabled by default in server settings), which compares a combined binary hash of `Assembly-CSharp.dll` and `CasualtiesMP.dll`:
 
-- Builds from this repository stay wire-compatible with upstream `v5.5.4` (`1.0.2_MPv5.5.4`), so packet formats and game rules match.
+- Builds from this repository stay wire-compatible with upstream `v5.5.5` (`1.0.2_MPv5.5.5`), so packet formats and game rules match.
 - Because `CasualtiesMP.dll` binaries differ between upstream releases, this patched fork, `+debug` builds, and `nightly` builds, their file hashes will not match.
 - **When all players install the exact same release package**, you can leave `Verify Game Hash` enabled.
-- **When playing across different builds of the same protocol version** (for example mixing this patched build with upstream `v5.5.4`, or mixing Release with `+debug`), the host should uncheck **`Verify Game Hash`** in the server configuration panel so clients are not rejected with `Game file hashes do not match`.
+- **When playing across different builds of the same protocol version** (for example mixing this patched build with upstream `v5.5.5`, or mixing Release with `+debug`), the host should uncheck **`Verify Game Hash`** in the server configuration panel so clients are not rejected with `Game file hashes do not match`.
 
 ---
 

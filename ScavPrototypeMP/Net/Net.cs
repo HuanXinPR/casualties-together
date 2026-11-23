@@ -1465,6 +1465,17 @@ namespace Together {
             result = reader.GetUShort();
         }
 
+        public static void PutArray(this NetDataWriter writer, knetid[] array) {
+            // LiteNetLib 2.1.4 对 null 数组调用 AsSpan 会直接抛异常导致整包丢失
+            if (array == null) {
+                array = Array.Empty<knetid>();
+            }
+            writer.PutUnmanagedArray(array);
+        }
+        public static void GetArray(this NetDataReader reader, out knetid[] result) {
+            result = reader.GetUnmanagedArray<knetid>() ?? Array.Empty<knetid>();
+        }
+
 
         public static void Put(this NetDataWriter writer, string value, bool oneByteChars) {
             if (oneByteChars) {

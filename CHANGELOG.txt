@@ -8,6 +8,18 @@ KNOWN ISSUES:
  - This mod is ass :crying_emoji:
 
 
+ --- 5.5.5 (Patched) --- 24.11.2026 --- Upstream v5.5.5 Sync & Bugfixes --- 
+- Upstream v5.5.5 Synchronization (wire-compatible with 1.0.2_MPv5.5.5)
+	Persisted custom multiplayer keybinds in SettingsJsonThing and saved immediately on rebind (PR #80)
+	Added ready player green checkmark icons in lobby player list, prevented clients from backing out of character select, and guarded ready player array serialization against null lists (PR #75)
+	Reworked lobby/server name profanity filter with word-piece aware NameFilterMatcher and embedded dictionary (PR #74)
+	Prevented stale prosthesis repair patch counts when item sync IDs are reused, cleared cache on worldgen, and added maxPatches fallback while keeping server-authoritative vanilla counts (PR #70)
+	Fixed scatter separation punishment counting skipped/dead players and null body references (PR #69)
+	Polished Traditional Chinese (zh-TW) localization entries and updated embedded casualtiestogether-d.bin asset (PR #72)
+- Patched Branch Fixes
+	Guarded character select ready checkmark rendering with #if FULLGAME in UIMainMenu so Demo configurations compile cleanly without Skins/Fullgame leakage
+
+
  --- 5.5.4 (Patched) --- 21.11.2026 --- Upstream v5.5.4 Sync, Bugfixes & Zero-Secret CI --- 
 - Upstream v5.5.4 Synchronization (wire-compatible with 1.0.2_MPv5.5.4)
 	Added Lobby Host Transfer (together.host-transfer.v2) to migrate sessions when the host disconnects
